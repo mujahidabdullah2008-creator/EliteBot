@@ -44,12 +44,11 @@ profit REAL DEFAULT 0
 ''')
 conn.commit()
 
-# ================= SIGNAL ENGINE (ANTI-429) =================
-pair_index = 0  # rotate pairs
+# ================= SIGNAL ENGINE =================
+pair_index = 0
 
 def generate_signal():
     global pair_index
-
     pair = PAIRS[pair_index]
     pair_index = (pair_index + 1) % len(PAIRS)
 
@@ -61,8 +60,7 @@ def generate_signal():
             interval=Interval.INTERVAL_1_MINUTE
         )
 
-        analysis = handler.get_analysis()
-        data = analysis.indicators
+        data = handler.get_analysis().indicators
 
         ema9 = data.get("EMA9")
         ema21 = data.get("EMA21")
@@ -75,13 +73,12 @@ def generate_signal():
 
         if ema9 > ema21 and rsi > 55:
             return pair, "BUY 🟩", confidence
-
         elif ema9 < ema21 and rsi < 45:
             return pair, "SELL 🟥", confidence
 
     except Exception as e:
         print("Signal error:", e)
-        time.sleep(10)  # pause if TradingView blocks
+        time.sleep(10)
 
     return None
 
@@ -164,7 +161,7 @@ def bot_loop():
                 time.sleep(120)
                 update_trade(trade_id)
 
-            time.sleep(90)  # 🔥 MAIN DELAY (ANTI-429)
+            time.sleep(90)
 
         except Exception as e:
             print("Bot error:", e)
@@ -175,14 +172,24 @@ app = Flask(__name__)
 
 @app.route('/')
 def dashboard():
-    cursor.execute("SELECT * FROM trades ORDER BY id DESC LIMIT 50")
-    trades = cursor.fetchall()
+    try:
+        cursor.execute("SELECT * FROM trades ORDER BY id DESC LIMIT 50")
+        trades = cursor.fetchall()
 
-    wins = len([t for t in trades if t[4] == "WIN"])
-    losses = len([t for t in trades if t[4] == "LOSS"])
-    total_profit = sum([t[9] for t in trades])
+        wins = len([t for t in trades if t[4] == "WIN"])
+        losses = len([t for t in trades if t[4] == "LOSS"])
+        total_profit = sum([t[9] for t in trades])
 
-    return render_template("dashboard.html", trades=trades, wins=wins, losses=losses, total_profit=total_profit)
+        return render_template(
+            "dashboard.html",
+            trades=trades,
+            wins=wins,
+            losses=losses,
+            total_profit=total_profit
+        )
+
+    except Exception as e:
+        return f"Dashboard Error: {e}"
 
 # ================= RUN =================
 if __name__ == "__main__":
