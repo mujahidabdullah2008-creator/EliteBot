@@ -1,0 +1,5 @@
+flask
+tradingview_ta
+requests
+pytz
+gunicorn
