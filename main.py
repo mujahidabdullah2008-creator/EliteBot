@@ -21,14 +21,22 @@ PAIRS = [
 # ================= TIMEZONE =================
 TZ = pytz.timezone("Africa/Lagos")
 
+# 🔥 DEBUG SESSION FUNCTION
 def in_session():
     now = datetime.now(TZ)
     hour = now.hour
 
+    print("🕒 Nigeria time:", now)  # DEBUG LINE
+
     morning = (8 <= hour < 12)
     afternoon = (14 <= hour < 18)
 
-    return morning or afternoon
+    if morning or afternoon:
+        print("✅ داخل session (ACTIVE)")
+        return True
+    else:
+        print("⏳ خارج session (WAITING)")
+        return False
 
 # ================= SIGNAL =================
 pair_index = 0
@@ -97,7 +105,6 @@ def bot_loop():
     while True:
         try:
             if not in_session():
-                print("⏳ Waiting for Nigeria session...")
                 time.sleep(60)
                 continue
 
