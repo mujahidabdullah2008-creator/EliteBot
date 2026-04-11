@@ -1,77 +1,80 @@
-from flask import Flask
 import os
-import requests
 import time
-import threading
-from datetime import datetime
+import requests
+from flask import Flask
+from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
 
-# ================= ENV VARIABLES =================
+# ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-if not BOT_TOKEN or not CHAT_ID:
-    print("❌ Missing BOT_TOKEN or CHAT_ID in environment variables")
+SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY"]
+TIMEFRAME = Interval.INTERVAL_1_MINUTE
 
-API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-
-
-# ================= WEB ROUTE (RENDER CHECK) =================
-@app.route("/")
-def home():
-    return "BOT IS LIVE 🔥"
-
-
-# ================= SEND MESSAGE FUNCTION =================
-def send_message(text):
+# ================= TELEGRAM =================
+def send_signal(message):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("❌ Missing BOT_TOKEN or CHAT_ID")
+        return
+    
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    
+    data = {
+        "chat_id": CHAT_ID,
+        "text": message
+    }
+    
     try:
-        requests.post(API_URL, json={
-            "chat_id": CHAT_ID,
-            "text": text
-        })
+        requests.post(url, data=data)
     except Exception as e:
-        print("Telegram error:", e)
+        print("Telegram Error:", e)
 
-
-# ================= SIGNAL LOGIC =================
-def generate_signal():
-    hour = datetime.now().hour
-
-    # Simple working logic (you can upgrade later)
-    if 7 <= hour < 12:
-        return "📈 MORNING SIGNAL ACTIVE"
-    elif 13 <= hour < 18:
-        return "📉 AFTERNOON SIGNAL ACTIVE"
-    else:
+# ================= ANALYSIS =================
+def get_signal(symbol):
+    try:
+        handler = TA_Handler(
+            symbol=symbol,
+            screener="forex",
+            exchange="FX_IDC",
+            interval=TIMEFRAME
+        )
+        
+        analysis = handler.get_analysis()
+        recommendation = analysis.summary["RECOMMENDATION"]
+        
+        return recommendation
+    except:
         return None
-
 
 # ================= BOT LOOP =================
 def bot_loop():
-    print("🚀 Bot started successfully")
-
+    print("🚀 Bot started...")
+    
     while True:
-        try:
-            signal = generate_signal()
+        for symbol in SYMBOLS:
+            signal = get_signal(symbol)
+            
+            if signal == "BUY":
+                msg = f"🟢 BUY SIGNAL\nPair: {symbol}\nTimeframe: 1M"
+                send_signal(msg)
+            
+            elif signal == "SELL":
+                msg = f"🔴 SELL SIGNAL\nPair: {symbol}\nTimeframe: 1M"
+                send_signal(msg)
+        
+        time.sleep(60)
 
-            if signal:
-                send_message(signal)
-                print("Sent:", signal)
-            else:
-                print("⏳ No active session")
+# ================= FLASK ROUTE =================
+@app.route("/")
+def home():
+    return "✅ Bot is running!"
 
-            time.sleep(60)
-
-        except Exception as e:
-            print("Loop error:", e)
-            time.sleep(10)
-
-
-# ================= START SERVER =================
+# ================= START =================
 if __name__ == "__main__":
-    import threading
-
-    threading.Thread(target=bot_loop).start()
-
+    from threading import Thread
+    
+    Thread(target=bot_loop).start()
+    
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
