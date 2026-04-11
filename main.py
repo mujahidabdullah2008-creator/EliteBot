@@ -1,8 +1,9 @@
-import time, sqlite3, requests, random, os
-from datetime import datetime, timedelta
+import time, requests, os
+from datetime import datetime
 from threading import Thread
-from flask import Flask, render_template
+from flask import Flask
 from tradingview_ta import TA_Handler, Interval
+import pytz
 
 # ================= APP =================
 app = Flask(__name__)
@@ -17,27 +18,17 @@ PAIRS = [
     {"symbol": "USDJPY", "exchange": "OANDA"},
 ]
 
-# ================= DATABASE =================
-conn = sqlite3.connect('trades.db', check_same_thread=False)
-cursor = conn.cursor()
+# ================= TIMEZONE =================
+TZ = pytz.timezone("Africa/Lagos")
 
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS trades (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-symbol TEXT,
-direction TEXT,
-entry_time TEXT,
-result TEXT,
-confidence INTEGER,
-profit REAL DEFAULT 0
-)
-''')
-conn.commit()
-
-# ================= SESSION =================
 def in_session():
-    hour = datetime.now().hour
-    return (8 <= hour < 12) or (14 <= hour < 18)
+    now = datetime.now(TZ)
+    hour = now.hour
+
+    morning = (8 <= hour < 12)
+    afternoon = (14 <= hour < 18)
+
+    return morning or afternoon
 
 # ================= SIGNAL =================
 pair_index = 0
@@ -62,7 +53,7 @@ def generate_signal():
         ema21 = data.get("EMA21")
         rsi = data.get("RSI")
 
-        print(f"DEBUG {pair['symbol']} EMA9={ema9} EMA21={ema21} RSI={rsi}")
+        print(f"[DEBUG] {pair['symbol']} EMA9={ema9} EMA21={ema21} RSI={rsi}")
 
         if ema9 is None or ema21 is None or rsi is None:
             return None
@@ -70,9 +61,10 @@ def generate_signal():
         confidence = int(rsi)
 
         if ema9 > ema21 and rsi > 50:
-            return pair, "BUY", confidence
+            return pair, "BUY 🟩", confidence
+
         if ema9 < ema21 and rsi < 50:
-            return pair, "SELL", confidence
+            return pair, "SELL 🟥", confidence
 
     except Exception as e:
         print("Signal error:", e)
@@ -81,7 +73,16 @@ def generate_signal():
 
 # ================= TELEGRAM =================
 def send_signal(pair, direction, confidence):
-    msg = f"{pair['symbol']} {direction} | Confidence: {confidence}%"
+    now = datetime.now(TZ).strftime("%I:%M %p")
+
+    msg = f"""
+🔥 SIGNAL ALERT
+
+{pair['symbol']} {direction}
+
+⏰ Time: {now} (NG)
+💯 Confidence: {confidence}%
+"""
 
     try:
         requests.get(
@@ -96,13 +97,13 @@ def bot_loop():
     while True:
         try:
             if not in_session():
-                print("Waiting for session...")
+                print("⏳ Waiting for Nigeria session...")
                 time.sleep(60)
                 continue
 
             signal = generate_signal()
 
-            print("Signal:", signal)
+            print("📊 Signal:", signal)
 
             if signal:
                 pair, direction, confidence = signal
@@ -114,10 +115,10 @@ def bot_loop():
             print("Bot error:", e)
             time.sleep(10)
 
-# ================= ROUTES =================
+# ================= ROUTE =================
 @app.route('/')
 def home():
-    return "BOT IS WORKING 🔥"
+    return "🔥 ELITE BOT IS LIVE"
 
-# ================= RUN =================
+# ================= START =================
 Thread(target=bot_loop).start()
