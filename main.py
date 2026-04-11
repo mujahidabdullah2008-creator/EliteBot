@@ -10,7 +10,7 @@ from flask import Flask, render_template
 from tradingview_ta import TA_Handler, Interval
 import pytz
 
-# ================= SETTINGS =================
+# ================= ENV =================
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
@@ -20,18 +20,16 @@ PAIRS = [
     {"symbol": "GBPUSD", "exchange": "OANDA", "flag1": "🇬🇧", "flag2": "🇺🇸"},
     {"symbol": "USDJPY", "exchange": "OANDA", "flag1": "🇺🇸", "flag2": "🇯🇵"},
     {"symbol": "AUDUSD", "exchange": "OANDA", "flag1": "🇦🇺", "flag2": "🇺🇸"},
-    {"symbol": "NZDUSD", "exchange": "OANDA", "flag1": "🇳🇿", "flag2": "🇺🇸"},
 ]
 
-# ================= TIMEZONE (OTC LOGIC) =================
+# ================= TIMEZONE =================
 TZ = pytz.timezone("Africa/Lagos")
 
 def in_session():
     hour = datetime.now(TZ).hour
-    # Morning: 8–12, Afternoon: 14–18
     return (8 <= hour < 12) or (14 <= hour < 18)
 
-# ================= DATABASE =================
+# ================= DB =================
 conn = sqlite3.connect("trades.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -48,11 +46,10 @@ profit REAL DEFAULT 0
 """)
 conn.commit()
 
-# ================= SIGNAL ENGINE (ANTI-429 FIXED) =================
+# ================= SIGNAL ENGINE =================
 pair_index = 0
 
-def get_indicator(pair):
-    """Safe TradingView fetch with delay protection"""
+def fetch_data(pair):
     try:
         handler = TA_Handler(
             symbol=pair["symbol"],
@@ -60,13 +57,9 @@ def get_indicator(pair):
             exchange=pair["exchange"],
             interval=Interval.INTERVAL_1_MINUTE
         )
-
-        analysis = handler.get_analysis()
-        return analysis.indicators
-
-    except Exception as e:
-        print("Signal error:", e)
-        time.sleep(10)  # cooldown to avoid 429
+        return handler.get_analysis().indicators
+    except:
+        time.sleep(10)
         return None
 
 
@@ -76,7 +69,7 @@ def generate_signal():
     pair = PAIRS[pair_index]
     pair_index = (pair_index + 1) % len(PAIRS)
 
-    data = get_indicator(pair)
+    data = fetch_data(pair)
 
     if not data:
         return None
@@ -88,9 +81,8 @@ def generate_signal():
     if ema9 is None or ema21 is None or rsi is None:
         return None
 
-    confidence = int(min(max(rsi, 30), 90))  # safer range
+    confidence = int(rsi)
 
-    # 🔥 LOOSENED LOGIC (FIX NO SIGNAL ISSUE)
     if ema9 > ema21:
         return pair, "BUY 🟩", confidence
 
@@ -98,7 +90,6 @@ def generate_signal():
         return pair, "SELL 🟥", confidence
 
     return None
-
 
 # ================= TELEGRAM =================
 def send_signal(pair, direction, confidence):
@@ -110,10 +101,8 @@ def send_signal(pair, direction, confidence):
 {pair['flag1']} {pair['symbol']} {pair['flag2']}
 📊 Direction: {direction}
 
-⏰ Time: {now.strftime("%I:%M %p")}
+⏰ Time: {now.strftime('%I:%M %p')}
 💯 Confidence: {confidence}%
-
-⚡ Session: {"ACTIVE" if in_session() else "INACTIVE"}
 """
 
     try:
@@ -124,8 +113,7 @@ def send_signal(pair, direction, confidence):
     except Exception as e:
         print("Telegram error:", e)
 
-
-# ================= SAVE TRADE =================
+# ================= SAVE =================
 def save_trade(pair, direction, confidence):
     now = datetime.now(TZ)
 
@@ -135,27 +123,15 @@ def save_trade(pair, direction, confidence):
     """, (pair["symbol"], direction, now.strftime("%I:%M %p"), "PENDING", confidence))
 
     conn.commit()
-    return cursor.lastrowid
-
-
-# ================= UPDATE RESULT =================
-def update_trade(trade_id):
-    result = random.choice(["WIN", "LOSS"])
-    profit = 10 if result == "WIN" else -5
-
-    cursor.execute(
-        "UPDATE trades SET result=?, profit=? WHERE id=?",
-        (result, profit, trade_id)
-    )
-    conn.commit()
-
 
 # ================= BOT LOOP =================
 def bot_loop():
     while True:
         try:
+            print("🔥 Bot running...")
+
             if not in_session():
-                print("Waiting for session...")
+                print("⏳ Waiting for session...")
                 time.sleep(60)
                 continue
 
@@ -164,27 +140,24 @@ def bot_loop():
             if signal:
                 pair, direction, confidence = signal
 
+                print(f"📊 {pair['symbol']} {direction} {confidence}%")
+
                 send_signal(pair, direction, confidence)
-                trade_id = save_trade(pair, direction, confidence)
+                save_trade(pair, direction, confidence)
 
                 time.sleep(120)
-                update_trade(trade_id)
+            else:
+                print("⚠️ No signal")
 
-            time.sleep(25)  # 🔥 anti-429 delay
+            time.sleep(25)
 
         except Exception as e:
-            print("Bot error:", e)
+            print("❌ Error:", e)
             time.sleep(10)
 
-
-# ================= FLASK APP =================
+# ================= FLASK =================
 app = Flask(__name__)
 
-@app.route("/ping")
-def ping():
-    return "OK"
-
-# 🔥 FIXED DASHBOARD ROUTE
 @app.route("/")
 def dashboard():
     cursor.execute("SELECT * FROM trades ORDER BY id DESC LIMIT 50")
@@ -192,16 +165,13 @@ def dashboard():
 
     wins = len([t for t in trades if t[4] == "WIN"])
     losses = len([t for t in trades if t[4] == "LOSS"])
-    total_profit = sum([t[5] if t[5] else 0 for t in trades])
 
     return render_template(
         "dashboard.html",
         trades=trades,
         wins=wins,
-        losses=losses,
-        total_profit=total_profit
+        losses=losses
     )
-
 
 # ================= RUN =================
 if __name__ == "__main__":
