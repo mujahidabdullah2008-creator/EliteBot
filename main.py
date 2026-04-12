@@ -17,63 +17,81 @@ SYMBOLS = [
     ("XAUUSD", "OANDA:XAUUSD")
 ]
 
+COOLDOWN = 120
 last_signal_time = 0
-COOLDOWN = 120  # 2 minutes
 
 
-# ===== GET ANALYSIS =====
+# =========================
+# GET MARKET DATA
+# =========================
 def get_analysis(name, symbol):
+    exchange, sym = symbol.split(":")
+
+    screener = "crypto" if "BINANCE" in exchange else "forex"
+
     handler = TA_Handler(
-        symbol=symbol.split(":")[1],
-        screener="crypto" if "BINANCE" in symbol else "forex",
-        exchange=symbol.split(":")[0],
+        symbol=sym,
+        screener=screener,
+        exchange=exchange,
         interval=Interval.INTERVAL_1_MINUTE
     )
+
     return handler.get_analysis()
 
 
-# ===== LEVEL 8 SMART SCORE ENGINE =====
+# =========================
+# SIGNAL LOGIC (FIXED)
+# =========================
 def calculate_signal(name, symbol):
-    analysis = get_analysis(name, symbol)
+    try:
+        analysis = get_analysis(name, symbol)
 
-    rsi = analysis.indicators.get("RSI", 50)
-    recommendation = analysis.summary["RECOMMENDATION"]
+        rec = analysis.summary.get("RECOMMENDATION", "NEUTRAL")
+        indicators = analysis.indicators
 
-    # 🔥 TREND FILTER (KEY UPGRADE)
-    trend = recommendation  # BUY / SELL / NEUTRAL
+        rsi = indicators.get("RSI", 50)
 
-    if trend not in ["BUY", "SELL"]:
+        # Normalize recommendation
+        rec = rec.upper()
+
+        if "BUY" in rec:
+            direction = "BUY 🟢"
+        elif "SELL" in rec:
+            direction = "SELL 🔴"
+        else:
+            return None  # ignore neutral only
+
+        # Simple RSI sanity check (NOT strict)
+        if direction.startswith("BUY") and rsi > 80:
+            return None
+        if direction.startswith("SELL") and rsi < 20:
+            return None
+
+        # Confidence (REALISTIC, not fake strict)
+        confidence = 60 + abs(50 - rsi)
+
+        return {
+            "asset": name,
+            "direction": direction,
+            "rsi": round(rsi, 2),
+            "confidence": int(min(confidence, 90))
+        }
+
+    except Exception as e:
+        print(f"ERROR on {name}: {e}")
         return None
 
-    # 🔥 SCORE ENGINE
-    rsi_score = abs(50 - rsi)
 
-    if rsi_score < 6:
-        return None  # weak market
-
-    confidence = 50 + rsi_score
-
-    if confidence < 65:
-        return None
-
-    direction = "BUY 🟢" if trend == "BUY" else "SELL 🔴"
-
-    return {
-        "asset": name,
-        "direction": direction,
-        "rsi": round(rsi, 2),
-        "confidence": int(min(confidence, 92))
-    }
-
-
-# ===== FORMAT SIGNAL =====
+# =========================
+# FORMAT SIGNAL
+# =========================
 def format_signal(sig):
     now = datetime.now(pytz.timezone("Africa/Lagos"))
     t = now.strftime("%I:%M %p")
 
     return f"""
 🤖 AlphaSignalsBot
-🚨 LEVEL 8 SIGNAL ENGINE
+🚨 LIVE SIGNAL
 
 📉 {sig['asset']}
 ⏰ Expiry: 2 minutes
@@ -90,37 +108,51 @@ def format_signal(sig):
 """
 
 
-# ===== ENGINE LOOP =====
+# =========================
+# BOT ENGINE
+# =========================
 def bot():
     global last_signal_time
-    print("🚀 LEVEL 8 ENGINE ACTIVE")
+    print("🚀 BOT RUNNING (FIXED VERSION)")
 
     while True:
         now = time.time()
 
+        # cooldown control
         if now - last_signal_time < COOLDOWN:
             time.sleep(5)
             continue
 
+        signal_found = False
+
         for name, symbol in SYMBOLS:
-            try:
-                sig = calculate_signal(name, symbol)
+            sig = calculate_signal(name, symbol)
 
-                if sig:
-                    last_signal_time = now
-                    print(format_signal(sig))
-                    break
+            # DEBUG (VERY IMPORTANT)
+            print(f"Checking {name} ->", sig)
 
-            except Exception as e:
-                print("ERROR:", e)
+            if sig:
+                print(format_signal(sig))
+                last_signal_time = now
+                signal_found = True
+                break
+
+        if not signal_found:
+            print("⚠️ No valid signal at this time")
 
         time.sleep(10)
 
 
-# ===== FLASK =====
+# =========================
+# FLASK SERVER
+# =========================
 @app.route("/")
 def home():
-    return jsonify({"status": "LEVEL 8 ENGINE RUNNING"})
+    return jsonify({
+        "status": "BOT RUNNING",
+        "mode": "FIXED ENGINE",
+        "cooldown": COOLDOWN
+    })
 
 
 threading.Thread(target=bot, daemon=True).start()
