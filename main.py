@@ -3,8 +3,6 @@ import time
 import requests
 from flask import Flask
 from threading import Thread
-from datetime import datetime, timedelta
-import pytz
 from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
@@ -15,164 +13,105 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 # ================= MARKETS =================
 MARKETS = [
-    ("EURUSD", "forex", "🇪🇺 🇺🇸 EUR/USD"),
-    ("GBPUSD", "forex", "🇬🇧 🇺🇸 GBP/USD"),
-    ("USDJPY", "forex", "🇺🇸 🇯🇵 USD/JPY"),
-    ("BTCUSDT", "crypto", "₿ BTC/USDT"),
-    ("ETHUSDT", "crypto", "Ξ ETH/USDT"),
-    ("XAUUSD", "forex", "🥇 GOLD (XAU/USD)")
+    ("EURUSD", "forex", "🇪🇺"),
+    ("GBPUSD", "forex", "🇬🇧"),
+    ("USDJPY", "forex", "🇯🇵"),
+    ("BTCUSDT", "crypto", "₿"),
+    ("ETHUSDT", "crypto", "Ξ"),
+    ("XAUUSD", "forex", "🥇"),
 ]
 
-# ================= STATE =================
 last_signal_time = {}
-last_trend = {}
-martingale_step = {}  # 🔥 LEVEL 5 ENGINE
-COOLDOWN = 120
-
-# ================= TIME =================
-def now_ng():
-    return datetime.now(pytz.timezone("Africa/Lagos"))
+COOLDOWN = 120  # faster signals (2 min)
 
 # ================= TELEGRAM =================
-def send_signal(msg):
+def send_signal(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except Exception as e:
-        print("Telegram error:", e)
+    requests.post(url, data={"chat_id": CHAT_ID, "text": message})
 
 # ================= ANALYSIS =================
-def get_analysis(symbol, market_type):
+def get_analysis(symbol, market):
     try:
-        handler = TA_Handler(
+        return TA_Handler(
             symbol=symbol,
-            screener="forex" if market_type == "forex" else "crypto",
-            exchange="FX_IDC" if market_type == "forex" else "BINANCE",
+            screener="crypto" if market == "crypto" else "forex",
+            exchange="BINANCE" if market == "crypto" else "FX_IDC",
             interval=Interval.INTERVAL_1_MINUTE
-        )
-        return handler.get_analysis()
+        ).get_analysis()
     except:
         return None
 
-# ================= CORE SIGNAL ENGINE =================
-def evaluate(symbol, market_type):
-    a = get_analysis(symbol, market_type)
+# ================= SCORE ENGINE =================
+def score(symbol, market):
+    a = get_analysis(symbol, market)
     if not a:
         return None
 
     s = a.summary
     rsi = a.indicators.get("RSI", 50)
 
-    buy = s.get("BUY", 0)
-    sell = s.get("SELL", 0)
-    total = buy + sell + s.get("NEUTRAL", 0)
+    buy = s["BUY"]
+    sell = s["SELL"]
 
-    if total == 0:
-        return None
-
-    confidence = max(buy, sell) / total
-
-    if confidence < 0.63:
-        return None
-
+    # SIMPLE SMART LOGIC (FAST SIGNALS)
     if buy > sell and rsi < 70:
-        return "BUY", confidence, rsi
+        return "BUY", min(0.55 + (buy - sell) * 0.02, 0.80), rsi
 
     if sell > buy and rsi > 30:
-        return "SELL", confidence, rsi
+        return "SELL", min(0.55 + (sell - buy) * 0.02, 0.80), rsi
 
     return None
 
-# ================= SMART MARTINGALE CHECK =================
-def martingale_allowed(symbol, direction, confidence, rsi):
-    """
-    🔥 LEVEL 5 LOGIC:
-    Only allow re-entry if trend is STILL STRONG
-    """
-
-    # weak market → block martingale
-    if confidence < 0.66:
-        return False
-
-    # BUY rules
-    if direction == "BUY":
-        if rsi > 72:  # overbought reversal risk
-            return False
-
-    # SELL rules
-    if direction == "SELL":
-        if rsi < 28:  # oversold reversal risk
-            return False
-
-    return True
-
-# ================= FORMAT =================
-def format_signal(name, direction, confidence, rsi, step=0):
-    now = now_ng()
-    entry = now.strftime("%I:%M %p")
+# ================= FORMAT (YOUR STYLE) =================
+def format_signal(symbol, direction, confidence, rsi, flag):
+    emoji = "📈" if direction == "BUY" else "📉"
 
     return f"""
-🤖 AlphaSignalsBot (LEVEL 5 GOD MODE)
+🤖 AlphaSignalsBot
 🚨 SIGNAL ALERT  
 
-📉 {name}
+{emoji} {flag} {symbol}
 ⏰ Expiry: 2 minutes
-📍 Entry Time: {entry}
+📍 Entry Time: {time.strftime('%I:%M %p')}
 
-📈 Direction: {direction} {"🟢" if direction=='BUY' else '🟥'}
+📈 Direction: {direction} {"🟩" if direction=="BUY" else "🟥"}
 💯 Confidence: {int(confidence*100)}%
 📉 RSI: {round(rsi)}
 
-🔁 Martingale Step: {step}
-⚡ Smart Re-entry Enabled
+🎯 Martingale Levels:
+🔁 Level 1 → {time.strftime('%I:%M %p', time.localtime(time.time()+120))}
+🔁 Level 2 → {time.strftime('%I:%M %p', time.localtime(time.time()+240))}
+🔁 Level 3 → {time.strftime('%I:%M %p', time.localtime(time.time()+360))}
 """
 
-# ================= BOT LOOP (LEVEL 5 ENGINE) =================
+# ================= BOT LOOP =================
 def bot():
     print("🚀 LEVEL 5 GOD MODE ACTIVE")
-    send_signal("🤖 LEVEL 5 GOD MODE LIVE 🚀")
+    send_signal("🚀 LEVEL 5 BOT LIVE")
 
     while True:
-        for symbol, market, name in MARKETS:
+        for symbol, market, flag in MARKETS:
 
             now = time.time()
-
             if symbol in last_signal_time and now - last_signal_time[symbol] < COOLDOWN:
                 continue
 
-            result = evaluate(symbol, market)
+            result = score(symbol, market)
 
             if result:
                 direction, confidence, rsi = result
 
-                # 🔥 NEW TREND = RESET MARTINGALE
-                if symbol not in last_trend or last_trend[symbol] != direction:
-                    martingale_step[symbol] = 0
-
-                last_trend[symbol] = direction
-
-                # 🔁 MARTINGALE RE-ENTRY LOGIC
-                step = martingale_step.get(symbol, 0)
-
-                if step == 0:
-                    send_signal(format_signal(name, direction, confidence, rsi, step=1))
-                    martingale_step[symbol] = 1
+                if confidence >= 0.58:   # balanced filter (not too strict)
+                    msg = format_signal(symbol, direction, confidence, rsi, flag)
+                    send_signal(msg)
                     last_signal_time[symbol] = now
-                    continue
-
-                # STEP 1 → STEP 2 → STEP 3 (SMART CHECK)
-                if step < 3:
-                    if martingale_allowed(symbol, direction, confidence, rsi):
-                        send_signal(format_signal(name, direction, confidence, rsi, step=step+1))
-                        martingale_step[symbol] += 1
-                        last_signal_time[symbol] = now
 
         time.sleep(15)
 
-# ================= FLASK =================
+# ================= ROUTE =================
 @app.route("/")
 def home():
-    return "🤖 LEVEL 5 GOD MODE ACTIVE"
+    return "BOT RUNNING"
 
 # ================= START =================
 Thread(target=bot).start()
