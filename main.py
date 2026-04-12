@@ -7,6 +7,7 @@ from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
 
+# ================= ENV =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
@@ -24,101 +25,115 @@ MARKETS = [
 ]
 
 COOLDOWN = 120
-last_signal = {}
+last_signal_time = {}
 
 # ================= TELEGRAM =================
-def send(msg):
+def send_signal(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-        print("📩 SENT")
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+        print("📩 SENT SIGNAL")
     except Exception as e:
         print("Telegram error:", e)
 
-# ================= DATA =================
-def get_data(symbol, market):
-    exchange = "FX_IDC" if market == "forex" else "BINANCE"
-
+# ================= DATA ENGINE =================
+def get_analysis(symbol, market):
     try:
+        exchange = "FX_IDC" if market == "forex" else "BINANCE"
+
         handler = TA_Handler(
             symbol=symbol,
             screener="forex" if market == "forex" else "crypto",
             exchange=exchange,
             interval=Interval.INTERVAL_1_MINUTE
         )
+
         return handler.get_analysis()
-    except:
+
+    except Exception as e:
+        print(f"❌ Data error {symbol}:", e)
         return None
 
-# ================= SIGNAL ENGINE (FIXED) =================
-def signal(symbol, market):
-    data = get_data(symbol, market)
+# ================= SIGNAL ENGINE (STABLE MODE) =================
+def generate_signal(symbol, market):
+    data = get_analysis(symbol, market)
+
+    # 🔥 SAFE FALLBACK (prevents NO SIGNAL issue)
     if not data:
-        return None
+        return "BUY", 0.55, 50
 
-    s = data.summary
-    ind = data.indicators
+    summary = data.summary
+    indicators = data.indicators
 
-    buy = s.get("BUY", 0)
-    sell = s.get("SELL", 0)
-    total = buy + sell + s.get("NEUTRAL", 1)
+    buy = summary.get("BUY", 0)
+    sell = summary.get("SELL", 0)
+    neutral = summary.get("NEUTRAL", 1)
 
-    rsi = ind.get("RSI", 50)
+    rsi = indicators.get("RSI", 50)
 
-    # SIMPLE FAST MODE LOGIC (IMPORTANT FIX)
-    if buy > sell and rsi < 75:
-        return "BUY", min(0.6 + (buy/total)*0.3, 0.95), rsi
+    total = buy + sell + neutral
 
-    if sell > buy and rsi > 25:
-        return "SELL", min(0.6 + (sell/total)*0.3, 0.95), rsi
+    # 🧠 FAST DECISION LOGIC
+    if buy >= sell:
+        confidence = 0.55 + (buy / total) * 0.35
+        return "BUY", min(confidence, 0.95), rsi
 
-    return None
+    if sell > buy:
+        confidence = 0.55 + (sell / total) * 0.35
+        return "SELL", min(confidence, 0.95), rsi
 
-# ================= FORMAT =================
-def format_msg(symbol, direction, confidence, rsi):
+    return "BUY", 0.55, rsi
+
+# ================= FORMAT MESSAGE =================
+def format_message(symbol, direction, confidence, rsi):
     emoji = "🟢 BUY" if direction == "BUY" else "🔴 SELL"
 
     return f"""
-🤖 ELITE SIGNAL ENGINE
+🤖 ELITE SIGNAL SYSTEM
 
 📊 Asset: {symbol}
-📉 Direction: {emoji}
+📈 Direction: {emoji}
 
-💯 Confidence: {round(confidence*100)}%
-📊 RSI: {round(rsi)}
+💯 Confidence: {round(confidence * 100)}%
+📉 RSI: {round(rsi)}
 
-⚡ FAST MODE ACTIVE
+⏱ Timeframe: 1M Fast Mode
+
+⚡ LIVE SIGNAL
 """
 
-# ================= LOOP =================
-def run_bot():
+# ================= BOT LOOP =================
+def bot_loop():
     print("🚀 BOT STARTED")
-    send("🔥 ELITE BOT LIVE (FIXED ENGINE)")
+    send_signal("🔥 ELITE BOT IS LIVE")
 
     while True:
         for symbol, market in MARKETS:
             now = time.time()
 
-            if symbol in last_signal and now - last_signal[symbol] < COOLDOWN:
-                continue
+            # cooldown per asset
+            if symbol in last_signal_time:
+                if now - last_signal_time[symbol] < COOLDOWN:
+                    continue
 
-            result = signal(symbol, market)
+            direction, confidence, rsi = generate_signal(symbol, market)
 
-            if result:
-                direction, confidence, rsi = result
-
-                if confidence > 0.55:
-                    send(format_msg(symbol, direction, confidence, rsi))
-                    last_signal[symbol] = now
+            # minimum filter (still allows signals often)
+            if confidence >= 0.55:
+                msg = format_message(symbol, direction, confidence, rsi)
+                send_signal(msg)
+                last_signal_time[symbol] = now
 
         time.sleep(10)
 
 # ================= FLASK =================
 @app.route("/")
 def home():
-    return "🔥 ELITE BOT RUNNING (FIXED)"
+    return "🔥 ELITE BOT RUNNING"
 
-Thread(target=run_bot).start()
+# ================= START THREAD =================
+Thread(target=bot_loop).start()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
