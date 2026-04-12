@@ -3,146 +3,142 @@ import time
 import requests
 from flask import Flask
 from threading import Thread
+from datetime import datetime
 from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
 
+# ================= ENV =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+if not BOT_TOKEN or not CHAT_ID:
+    print("❌ Missing BOT_TOKEN or CHAT_ID")
+
 # ================= MARKETS =================
 MARKETS = [
-    ("EURUSD", "forex"),
-    ("GBPUSD", "forex"),
-    ("USDJPY", "forex"),
-    ("BTCUSDT", "crypto"),
-    ("ETHUSDT", "crypto"),
-    ("XAUUSD", "forex")
+    ("EURUSD", "forex", "🇪🇺 🇺🇸 EUR/USD"),
+    ("GBPUSD", "forex", "🇬🇧 🇺🇸 GBP/USD"),
+    ("USDJPY", "forex", "🇺🇸 🇯🇵 USD/JPY"),
+    ("BTCUSDT", "crypto", "₿ BTC/USDT"),
+    ("ETHUSDT", "crypto", "Ξ ETH/USDT"),
+    ("XAUUSD", "forex", "🥇 GOLD (XAU/USD)")
 ]
 
-COOLDOWN = 180
-last_signal_time = 0
+COOLDOWN = 180  # faster signals but controlled
+last_signal_time = {}
 
 # ================= TELEGRAM =================
-def send_signal(msg):
+def send_signal(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-
-# ================= GET DATA =================
-def get_analysis(symbol, interval):
     try:
-        return TA_Handler(
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+        print("📩 SENT SIGNAL")
+    except Exception as e:
+        print("Telegram error:", e)
+
+# ================= ANALYSIS =================
+def get_analysis(symbol, exchange):
+    try:
+        handler = TA_Handler(
             symbol=symbol,
-            screener="forex" if symbol not in ["BTCUSDT", "ETHUSDT"] else "crypto",
-            exchange="FX_IDC" if symbol not in ["BTCUSDT", "ETHUSDT"] else "BINANCE",
-            interval=interval
-        ).get_analysis()
-    except:
+            screener="forex" if exchange == "forex" else "crypto",
+            exchange="FX_IDC" if exchange == "forex" else "BINANCE",
+            interval=Interval.INTERVAL_1_MINUTE
+        )
+        return handler.get_analysis()
+    except Exception as e:
+        print("Analysis error:", symbol, e)
         return None
 
 # ================= SCORE ENGINE =================
-def score(symbol):
-    a1 = get_analysis(symbol, Interval.INTERVAL_1_MINUTE)
-    a5 = get_analysis(symbol, Interval.INTERVAL_5_MINUTE)
-    a15 = get_analysis(symbol, Interval.INTERVAL_15_MINUTES)
-
-    if not a1 or not a5 or not a15:
+def score_signal(symbol, exchange):
+    a1 = get_analysis(symbol, exchange)
+    if not a1:
         return None
 
-    s1, s5, s15 = a1.summary, a5.summary, a15.summary
-    rsi = a1.indicators.get("RSI", 50)
+    s = a1.summary
+    ind = a1.indicators
 
-    # direction check
-    direction = s1["RECOMMENDATION"]
+    rsi = ind.get("RSI", 50)
 
-    if direction not in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
+    buy = s.get("BUY", 0)
+    sell = s.get("SELL", 0)
+    neutral = s.get("NEUTRAL", 0)
+
+    total = buy + sell + neutral
+    if total == 0:
         return None
 
-    # alignment filter
-    if s1["RECOMMENDATION"] != s5["RECOMMENDATION"]:
+    confidence = max(buy, sell) / total
+
+    # 🔥 STRONG FILTER (IMPORTANT)
+    if confidence < 0.60:
         return None
 
-    if "BUY" in direction and "SELL" in s15["RECOMMENDATION"]:
-        return None
-    if "SELL" in direction and "BUY" in s15["RECOMMENDATION"]:
-        return None
+    # TREND DECISION
+    if buy > sell and rsi < 70:
+        return "BUY", confidence, rsi
 
-    buy = s1["BUY"] + s5["BUY"] + s15["BUY"]
-    sell = s1["SELL"] + s5["SELL"] + s15["SELL"]
-    total = buy + sell + s1["NEUTRAL"] + s5["NEUTRAL"] + s15["NEUTRAL"]
+    if sell > buy and rsi > 30:
+        return "SELL", confidence, rsi
 
-    confidence = max(buy, sell) / total if total else 0
+    return None
 
-    final_dir = "BUY" if buy > sell else "SELL"
+# ================= FORMAT (YOUR STYLE) =================
+def format_signal(name, direction, confidence, rsi):
+    now = datetime.now().strftime("%I:%M %p")
 
-    return {
-        "symbol": symbol,
-        "direction": final_dir,
-        "confidence": confidence,
-        "rsi": rsi
-    }
-
-# ================= FORMAT =================
-def format_signal(s):
-    flag = "🇪🇺" if "EUR" in s["symbol"] else "🇬🇧" if "GBP" in s["symbol"] else "🇯🇵" if "JPY" in s["symbol"] else "₿"
-
-    entry_time = time.strftime("%I:%M %p")
-    t = time.localtime(time.time() + 120)
-
-    martingale = f"""
-🎯 Martingale Levels:
-🔁 Level 1 → {time.strftime("%I:%M %p", t)}
-🔁 Level 2 → {time.strftime("%I:%M %p", time.localtime(time.time() + 240))}
-🔁 Level 3 → {time.strftime("%I:%M %p", time.localtime(time.time() + 360))}
-"""
+    expiry1 = (datetime.now()).strftime("%I:%M %p")
+    expiry2 = (datetime.now()).strftime("%I:%M %p")
+    expiry3 = (datetime.now()).strftime("%I:%M %p")
 
     return f"""
 🤖 AlphaSignalsBot
 🚨 SIGNAL ALERT  
 
-📉 {flag} {s['symbol']}
+📉 {name}
 ⏰ Expiry: 2 minutes
-📍 Entry Time: {entry_time}
+📍 Entry Time: {now}
 
-📈 Direction: {'🟢 BUY' if s['direction']=='BUY' else 'SELL 🟥'}
-💯 Confidence: {round(s['confidence']*100)}%
-📉 RSI: {round(s['rsi'])}
+📈 Direction: {direction} {"🟢" if direction=="BUY" else "🟥"}
+💯 Confidence: {int(confidence*100)}%
+📉 RSI: {round(rsi)}
 
-{martingale}
-
-⚡ LEVEL 3 GOD MODE CONFIRMED
+🎯 Martingale Levels:
+🔁 Level 1 → {expiry1}
+🔁 Level 2 → {expiry2}
+🔁 Level 3 → {expiry3}
 """
 
-# ================= LOOP =================
-def bot():
-    global last_signal_time
+# ================= BOT LOOP =================
+def bot_loop():
     print("🚀 LEVEL 3 GOD MODE ACTIVE")
-    send_signal("🔥 LEVEL 3 GOD MODE BOT LIVE")
+    send_signal("🤖 AlphaSignalsBot LIVE 🚀")
 
     while True:
-        best = None
+        for symbol, market, name in MARKETS:
+            now = time.time()
 
-        for symbol, _ in MARKETS:
-            s = score(symbol)
-            if not s:
+            if symbol in last_signal_time and now - last_signal_time[symbol] < COOLDOWN:
                 continue
 
-            if s["confidence"] < 0.65:
-                continue
+            result = score_signal(symbol, market)
 
-            if not best or s["confidence"] > best["confidence"]:
-                best = s
+            if result:
+                direction, confidence, rsi = result
 
-        now = time.time()
+                msg = format_signal(name, direction, confidence, rsi)
+                send_signal(msg)
 
-        if best and now - last_signal_time > COOLDOWN:
-            send_signal(format_signal(best))
-            last_signal_time = now
+                last_signal_time[symbol] = now
 
         time.sleep(20)
 
+# ================= ROUTE =================
 @app.route("/")
 def home():
-    return "LEVEL 3 GOD MODE RUNNING"
+    return "🤖 AlphaSignalsBot Running"
 
-Thread(target=bot).start()
+# ================= START =================
+Thread(target=bot_loop).start()
