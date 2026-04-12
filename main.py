@@ -7,11 +7,19 @@ from flask import Flask
 from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
+import os
+import time
+import requests
+from datetime import datetime, timedelta
+from threading import Thread
+from flask import Flask
+from tradingview_ta import TA_Handler, Interval
+
+app = Flask(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# ================= MARKETS =================
 MARKETS = [
     ("EURUSD", "forex"),
     ("GBPUSD", "forex"),
@@ -21,8 +29,9 @@ MARKETS = [
     ("XAUUSD", "forex"),
 ]
 
-COOLDOWN = 70
-last_signal = {}
+# ================= STATE CONTROL =================
+active_trades = {}   # symbol -> trade data
+COOLDOWN = 120
 
 # ================= TELEGRAM =================
 def send(msg):
@@ -32,7 +41,7 @@ def send(msg):
     except:
         pass
 
-# ================= DATA =================
+# ================= ANALYSIS =================
 def get_analysis(symbol, screener):
     try:
         handler = TA_Handler(
@@ -45,8 +54,8 @@ def get_analysis(symbol, screener):
     except:
         return None
 
-# ================= LEVEL 7 SIGNAL ENGINE =================
-def signal_engine(symbol, screener):
+# ================= SIGNAL ENGINE =================
+def generate_signal(symbol, screener):
     a = get_analysis(symbol, screener)
     if not a:
         return None
@@ -58,18 +67,15 @@ def signal_engine(symbol, screener):
     sell = s["SELL"]
     rsi = ind.get("RSI", 50)
 
-    # 🎯 direction logic (balanced, not strict)
-    if buy > sell:
+    if buy >= sell:
         direction = "BUY"
         strength = buy / max(buy + sell, 1)
     else:
         direction = "SELL"
         strength = sell / max(buy + sell, 1)
 
-    # ⚡ confidence system
     confidence = 0.50 + (strength * 0.30)
 
-    # RSI boost
     if direction == "BUY" and rsi < 70:
         confidence += 0.05
     if direction == "SELL" and rsi > 30:
@@ -77,20 +83,18 @@ def signal_engine(symbol, screener):
 
     return direction, min(confidence, 0.92), rsi
 
-# ================= FORMAT (YOUR STYLE) =================
-def format_signal(symbol, direction, confidence, rsi):
+# ================= FORMAT =================
+def format_signal(symbol, direction, confidence, rsi, stage):
     now = datetime.now().strftime("%I:%M %p")
 
     flag = "🇪🇺" if "EUR" in symbol else "🇬🇧" if "GBP" in symbol else "🇯🇵" if "JPY" in symbol else "₿" if "BTC" in symbol else "💰"
 
-    expiry = 2  # 🔥 FIXED 2 MINUTES
-
-    msg = f"""
+    return f"""
 🤖 AlphaSignalsBot
-🚨 SIGNAL ALERT  
+🚨 SIGNAL ALERT ({stage})
 
 📉 {flag} {symbol}
-⏰ Expiry: {expiry} minutes
+⏰ Expiry: 2 minutes
 📍 Entry Time: {now}
 
 📈 Direction: {'BUY 🟢' if direction == 'BUY' else 'SELL 🟥'}
@@ -102,41 +106,67 @@ def format_signal(symbol, direction, confidence, rsi):
 🔁 Level 2 → +4 min
 🔁 Level 3 → +6 min
 """
-    return msg
 
-# ================= BOT LOOP =================
+# ================= TRADE SYSTEM =================
 def bot():
-    print("🚀 2-MINUTE SIGNAL ENGINE ACTIVE")
-    send("🚀 AlphaSignalsBot LIVE (2-Min Mode)")
+    print("🚀 LEVEL 7 TRADE ENGINE ACTIVE")
+    send("🚀 AlphaSignalsBot LEVEL 7 FIX ONLINE")
 
     while True:
+        now = datetime.now()
+
         for symbol, market in MARKETS:
 
-            now = time.time()
+            # ================= BLOCK ACTIVE TRADE =================
+            if symbol in active_trades:
+                trade = active_trades[symbol]
 
-            # prevent spam
-            if symbol in last_signal and now - last_signal[symbol] < COOLDOWN:
+                entry_time = trade["time"]
+
+                # M1
+                if not trade["m1"] and now >= entry_time + timedelta(minutes=2):
+                    send(format_signal(symbol, trade["dir"], trade["conf"], trade["rsi"], "M1"))
+                    trade["m1"] = True
+
+                # M2
+                if not trade["m2"] and now >= entry_time + timedelta(minutes=4):
+                    send(format_signal(symbol, trade["dir"], trade["conf"], trade["rsi"], "M2"))
+                    trade["m2"] = True
+
+                # M3
+                if not trade["m3"] and now >= entry_time + timedelta(minutes=6):
+                    send(format_signal(symbol, trade["dir"], trade["conf"], trade["rsi"], "M3"))
+                    trade["m3"] = True
+                    del active_trades[symbol]
+
                 continue
 
-            result = signal_engine(symbol, market)
+            # ================= NEW SIGNAL =================
+            result = generate_signal(symbol, market)
 
             if result:
                 direction, confidence, rsi = result
 
-                # 🔥 relaxed threshold (prevents silence)
-                if confidence >= 0.52:
+                if confidence >= 0.55:
 
-                    msg = format_signal(symbol, direction, confidence, rsi)
-                    send(msg)
+                    send(format_signal(symbol, direction, confidence, rsi, "ENTRY"))
 
-                    last_signal[symbol] = now
+                    active_trades[symbol] = {
+                        "dir": direction,
+                        "conf": confidence,
+                        "rsi": rsi,
+                        "time": now,
+                        "m1": False,
+                        "m2": False,
+                        "m3": False
+                    }
 
-        time.sleep(15)
+        time.sleep(5)
 
 # ================= ROUTE =================
 @app.route("/")
 def home():
-    return "AlphaSignalsBot 2-Min Engine Running"
+    return "LEVEL 7 FIX ACTIVE"
 
 # ================= START =================
 Thread(target=bot).start()
