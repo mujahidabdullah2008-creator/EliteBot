@@ -1,12 +1,13 @@
 import os
 import time
 import requests
-from flask import Flask
+from datetime import datetime, timedelta
 from threading import Thread
+from flask import Flask
 from tradingview_ta import TA_Handler, Interval
-from datetime import datetime
 import pytz
 
+# ================= APP =================
 app = Flask(__name__)
 
 # ================= ENV =================
@@ -26,67 +27,43 @@ MARKETS = [
     ("XAUUSD", "forex")  # GOLD
 ]
 
-COOLDOWN = 120
+# ================= SETTINGS =================
+COOLDOWN = 180  # 3 minutes per pair
 last_signal_time = {}
 
-# ================= SESSION =================
-def is_active_session():
-    nigeria = pytz.timezone("Africa/Lagos")
-    now = datetime.now(nigeria)
-    hour = now.hour
-
-    # London + NY sessions
-    return (8 <= hour <= 12) or (13 <= hour <= 18)
+tz = pytz.timezone("Africa/Lagos")  # Set your timezone
 
 # ================= TELEGRAM =================
 def send_signal(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
-        print("📩 Sent:", message)
-    except Exception as e:
-        print("❌ Telegram Error:", e)
+    for _ in range(3):
+        try:
+            requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+            print("📩 Sent:", message)
+            return
+        except Exception as e:
+            print("❌ Telegram Error:", e)
+            time.sleep(2)
 
 # ================= ANALYSIS =================
-def get_analysis(symbol, market, interval):
+def get_analysis(pair, interval, screener="forex"):
     try:
         handler = TA_Handler(
-            symbol=symbol,
-            screener=market,
-            exchange="BINANCE" if market == "crypto" else "FX_IDC",
+            symbol=pair,
+            screener=screener,
+            exchange="FX_IDC" if screener=="forex" else "BINANCE",
             interval=interval
         )
         return handler.get_analysis()
     except Exception as e:
-        print(f"❌ Error {symbol}:", e)
+        print(f"❌ Error {pair}:", e)
         return None
 
-# ================= AI SCORE =================
-def ai_score(trend, confidence, rsi, volatility):
-    score = 0
-
-    if trend in ["STRONG_BUY", "STRONG_SELL"]:
-        score += 25
-    elif trend in ["BUY", "SELL"]:
-        score += 15
-
-    score += int(confidence * 35)
-
-    if 45 <= rsi <= 65:
-        score += 20
-    elif 35 <= rsi <= 75:
-        score += 10
-
-    if volatility > 0.3:
-        score += 10
-
-    return score
-
-# ================= AI SIGNAL =================
-def ai_signal(symbol, market):
-    a1 = get_analysis(symbol, market, Interval.INTERVAL_1_MINUTE)
-    a5 = get_analysis(symbol, market, Interval.INTERVAL_5_MINUTES)
-    a15 = get_analysis(symbol, market, Interval.INTERVAL_15_MINUTES)
+# ================= ELITE SIGNAL LOGIC =================
+def elite_signal(pair, screener):
+    a1 = get_analysis(pair, Interval.INTERVAL_1_MINUTE, screener)
+    a5 = get_analysis(pair, Interval.INTERVAL_5_MINUTES, screener)
+    a15 = get_analysis(pair, Interval.INTERVAL_15_MINUTES, screener)
 
     if not a1 or not a5 or not a15:
         return None
@@ -94,52 +71,74 @@ def ai_signal(symbol, market):
     s1 = a1.summary
     s5 = a5.summary
     s15 = a15.summary
-
-    trend = s15["RECOMMENDATION"]
-
-    buy_power = s1["BUY"] + s5["BUY"]
-    sell_power = s1["SELL"] + s5["SELL"]
-    total = buy_power + sell_power + s1["NEUTRAL"] + s5["NEUTRAL"]
-
-    confidence = max(buy_power, sell_power) / total
-
     ind = a1.indicators
+
     rsi = ind.get("RSI", 50)
-    volatility = abs(ind.get("close", 0) - ind.get("open", 0))
 
-    # less strict filter
-    if abs(buy_power - sell_power) < 1:
-        return None
+    # --- Trend alignment ---
+    if s1["RECOMMENDATION"] in ["STRONG_BUY", "BUY"] and s5["RECOMMENDATION"] in ["STRONG_BUY", "BUY"]:
+        if rsi < 70:
+            confidence = (s1["BUY"] + s5["BUY"]) / (
+                s1["BUY"] + s1["SELL"] + s1["NEUTRAL"] +
+                s5["BUY"] + s5["SELL"] + s5["NEUTRAL"]
+            )
+            return "BUY", confidence, rsi
 
-    # BUY
-    if trend in ["BUY", "STRONG_BUY"] and buy_power > sell_power:
-        if 35 < rsi < 75:
-            score = ai_score(trend, confidence, rsi, volatility)
-            return "BUY", confidence, rsi, score
-
-    # SELL
-    if trend in ["SELL", "STRONG_SELL"] and sell_power > buy_power:
-        if 25 < rsi < 65:
-            score = ai_score(trend, confidence, rsi, volatility)
-            return "SELL", confidence, rsi, score
+    if s1["RECOMMENDATION"] in ["STRONG_SELL", "SELL"] and s5["RECOMMENDATION"] in ["STRONG_SELL", "SELL"]:
+        if rsi > 30:
+            confidence = (s1["SELL"] + s5["SELL"]) / (
+                s1["BUY"] + s1["SELL"] + s1["NEUTRAL"] +
+                s5["BUY"] + s5["SELL"] + s5["NEUTRAL"]
+            )
+            return "SELL", confidence, rsi
 
     return None
 
-# ================= FORMAT =================
-def format_signal(symbol, direction, confidence, rsi, score):
+# ================= FORMAT SIGNAL =================
+def format_signal(pair, direction, confidence, rsi):
+    now = datetime.now(tz)
+
+    entry_time = now.strftime("%I:%M %p")
+    expiry_time = (now + timedelta(minutes=2)).strftime("%I:%M %p")
+
+    mg1 = (now + timedelta(minutes=2)).strftime("%I:%M %p")
+    mg2 = (now + timedelta(minutes=4)).strftime("%I:%M %p")
+    mg3 = (now + timedelta(minutes=6)).strftime("%I:%M %p")
+
+    # Flag icons
+    if "EUR" in pair:
+        flag = "🇪🇺"
+    elif "GBP" in pair:
+        flag = "🇬🇧"
+    elif "USDJPY" in pair:
+        flag = "🇯🇵"
+    elif "BTC" in pair or "ETH" in pair:
+        flag = "🪙"
+    elif "XAU" in pair:
+        flag = "🥇"
+    else:
+        flag = "🌍"
+
+    direction_icon = "🟥 SELL" if direction == "SELL" else "🟩 BUY"
+
     return f"""
-🔥 ELITE MULTI-MARKET SIGNAL
+🤖 ELITE AI BOT
+🚨 SIGNAL ALERT  
 
-Asset: {symbol}
-Direction: {'🟢 BUY' if direction == 'BUY' else '🔴 SELL'}
+📊 {flag} {pair}
+⏰ Expiry: 2 minutes
+📍 Entry Time: {entry_time}
 
-AI Score: {score}/100
-Confidence: {round(confidence*100)}%
-RSI: {round(rsi)}
+📈 Direction: {direction_icon}
+💯 Confidence: {round(confidence*100)}%
+📊 RSI: {round(rsi)}
 
-Timeframe: 1M Entry | 15M Trend
+🎯 Martingale Levels:
+🔁 Level 1 → {mg1}
+🔁 Level 2 → {mg2}
+🔁 Level 3 → {mg3}
 
-⚡ Fast Trade Opportunity
+⚡ Fast Trade Opportunity.
 """
 
 # ================= BOT LOOP =================
@@ -148,30 +147,23 @@ def bot_loop():
     send_signal("🔥 ELITE BOT IS LIVE")
 
     while True:
-        if not is_active_session():
-            print("⏸ Outside trading session")
-            time.sleep(60)
-            continue
-
-        for symbol, market in MARKETS:
+        for pair, market_type in MARKETS:
             now = time.time()
 
-            if symbol in last_signal_time and now - last_signal_time[symbol] < COOLDOWN:
+            # cooldown
+            if pair in last_signal_time and now - last_signal_time[pair] < COOLDOWN:
                 continue
 
-            result = ai_signal(symbol, market)
+            result = elite_signal(pair, "forex" if market_type=="forex" else "crypto")
 
             if result:
-                direction, confidence, rsi, score = result
-
-                print(f"{symbol} | Score:{score} | Conf:{confidence}")
-
-                if score >= 60:
-                    msg = format_signal(symbol, direction, confidence, rsi, score)
+                direction, confidence, rsi = result
+                if confidence >= 0.55:  # less strict for faster signals
+                    msg = format_signal(pair, direction, confidence, rsi)
                     send_signal(msg)
-                    last_signal_time[symbol] = now
+                    last_signal_time[pair] = now
 
-        time.sleep(15)
+        time.sleep(20)  # faster loop
 
 # ================= ROUTE =================
 @app.route("/")
@@ -180,3 +172,6 @@ def home():
 
 # ================= START =================
 Thread(target=bot_loop).start()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
