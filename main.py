@@ -8,10 +8,10 @@ from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
 
-# ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+# ================= MARKETS =================
 MARKETS = [
     ("EURUSD", "forex"),
     ("GBPUSD", "forex"),
@@ -21,16 +21,16 @@ MARKETS = [
     ("XAUUSD", "forex"),
 ]
 
-COOLDOWN = 90
-last_signal_time = {}
+COOLDOWN = 70
+last_signal = {}
 
 # ================= TELEGRAM =================
-def send_signal(msg):
+def send(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
         requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except Exception as e:
-        print("Telegram error:", e)
+    except:
+        pass
 
 # ================= DATA =================
 def get_analysis(symbol, screener):
@@ -45,62 +45,52 @@ def get_analysis(symbol, screener):
     except:
         return None
 
-# ================= LEVEL 6 ENGINE =================
-def score(symbol, screener):
+# ================= LEVEL 7 SIGNAL ENGINE =================
+def signal_engine(symbol, screener):
     a = get_analysis(symbol, screener)
     if not a:
         return None
 
-    s = a.indicators
-    summary = a.summary
+    s = a.summary
+    ind = a.indicators
 
-    rsi = s.get("RSI", 50)
-    macd = s.get("MACD.macd", 0)
-    signal = s.get("MACD.signal", 0)
+    buy = s["BUY"]
+    sell = s["SELL"]
+    rsi = ind.get("RSI", 50)
 
-    buy = summary["BUY"]
-    sell = summary["SELL"]
-
-    trend = "BUY" if buy > sell else "SELL"
-
-    macd_bull = macd > signal
-
-    # ================= STRONG BUY =================
-    if trend == "BUY" and rsi < 70 and macd_bull:
-        confidence = 0.65 + min((buy - sell) * 0.02, 0.25)
-        return "BUY", confidence, rsi
-
-    # ================= STRONG SELL =================
-    if trend == "SELL" and rsi > 30 and not macd_bull:
-        confidence = 0.65 + min((sell - buy) * 0.02, 0.25)
-        return "SELL", confidence, rsi
-
-    # ================= FALLBACK MODE =================
+    # 🎯 direction logic (balanced, not strict)
     if buy > sell:
-        return "BUY", 0.55, rsi
-    if sell > buy:
-        return "SELL", 0.55, rsi
+        direction = "BUY"
+        strength = buy / max(buy + sell, 1)
+    else:
+        direction = "SELL"
+        strength = sell / max(buy + sell, 1)
 
-    return None
+    # ⚡ confidence system
+    confidence = 0.50 + (strength * 0.30)
 
-# ================= FORMAT (YOUR REQUEST STYLE) =================
+    # RSI boost
+    if direction == "BUY" and rsi < 70:
+        confidence += 0.05
+    if direction == "SELL" and rsi > 30:
+        confidence += 0.05
+
+    return direction, min(confidence, 0.92), rsi
+
+# ================= FORMAT (YOUR STYLE) =================
 def format_signal(symbol, direction, confidence, rsi):
     now = datetime.now().strftime("%I:%M %p")
 
     flag = "🇪🇺" if "EUR" in symbol else "🇬🇧" if "GBP" in symbol else "🇯🇵" if "JPY" in symbol else "₿" if "BTC" in symbol else "💰"
 
-    martingale = [
-        (2, 2),
-        (2, 4),
-        (2, 6)
-    ]
+    expiry = 2  # 🔥 FIXED 2 MINUTES
 
     msg = f"""
 🤖 AlphaSignalsBot
 🚨 SIGNAL ALERT  
 
 📉 {flag} {symbol}
-⏰ Expiry: 2 minutes
+⏰ Expiry: {expiry} minutes
 📍 Entry Time: {now}
 
 📈 Direction: {'BUY 🟢' if direction == 'BUY' else 'SELL 🟥'}
@@ -108,41 +98,45 @@ def format_signal(symbol, direction, confidence, rsi):
 📉 RSI: {round(rsi)}
 
 🎯 Martingale Levels:
-🔁 Level 1 → +{martingale[0][1]} min
-🔁 Level 2 → +{martingale[1][1]} min
-🔁 Level 3 → +{martingale[2][1]} min
+🔁 Level 1 → +2 min
+🔁 Level 2 → +4 min
+🔁 Level 3 → +6 min
 """
     return msg
 
 # ================= BOT LOOP =================
 def bot():
-    print("🚀 LEVEL 6 ENGINE ACTIVE")
-    send_signal("🚀 AlphaSignalsBot LEVEL 6 LIVE")
+    print("🚀 2-MINUTE SIGNAL ENGINE ACTIVE")
+    send("🚀 AlphaSignalsBot LIVE (2-Min Mode)")
 
     while True:
         for symbol, market in MARKETS:
+
             now = time.time()
 
-            if symbol in last_signal_time:
-                if now - last_signal_time[symbol] < COOLDOWN:
-                    continue
+            # prevent spam
+            if symbol in last_signal and now - last_signal[symbol] < COOLDOWN:
+                continue
 
-            result = score(symbol, market)
+            result = signal_engine(symbol, market)
 
             if result:
                 direction, confidence, rsi = result
 
-                if confidence >= 0.55:  # relaxed but controlled
-                    msg = format_signal(symbol, direction, confidence, rsi)
-                    send_signal(msg)
-                    last_signal_time[symbol] = now
+                # 🔥 relaxed threshold (prevents silence)
+                if confidence >= 0.52:
 
-        time.sleep(20)
+                    msg = format_signal(symbol, direction, confidence, rsi)
+                    send(msg)
+
+                    last_signal[symbol] = now
+
+        time.sleep(15)
 
 # ================= ROUTE =================
 @app.route("/")
 def home():
-    return "LEVEL 6 ENGINE RUNNING"
+    return "AlphaSignalsBot 2-Min Engine Running"
 
 # ================= START =================
 Thread(target=bot).start()
