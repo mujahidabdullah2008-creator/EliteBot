@@ -3,7 +3,8 @@ import time
 import requests
 from flask import Flask
 from threading import Thread
-from datetime import datetime
+from datetime import datetime, timedelta
+import pytz
 from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
@@ -11,9 +12,6 @@ app = Flask(__name__)
 # ================= ENV =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
-
-if not BOT_TOKEN or not CHAT_ID:
-    print("❌ Missing BOT_TOKEN or CHAT_ID")
 
 # ================= MARKETS =================
 MARKETS = [
@@ -25,25 +23,32 @@ MARKETS = [
     ("XAUUSD", "forex", "🥇 GOLD (XAU/USD)")
 ]
 
-COOLDOWN = 180  # faster signals but controlled
+# ================= STATE MEMORY =================
 last_signal_time = {}
+last_trend = {}  # 🔥 LEVEL 4 CORE (trend cycle memory)
+
+COOLDOWN = 180  # faster but controlled
+
+# ================= TIME =================
+def now_ng():
+    return datetime.now(pytz.timezone("Africa/Lagos"))
 
 # ================= TELEGRAM =================
-def send_signal(message):
+def send_signal(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
-        print("📩 SENT SIGNAL")
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        print("📩 SENT")
     except Exception as e:
         print("Telegram error:", e)
 
 # ================= ANALYSIS =================
-def get_analysis(symbol, exchange):
+def get_analysis(symbol, exchange_type):
     try:
         handler = TA_Handler(
             symbol=symbol,
-            screener="forex" if exchange == "forex" else "crypto",
-            exchange="FX_IDC" if exchange == "forex" else "BINANCE",
+            screener="forex" if exchange_type == "forex" else "crypto",
+            exchange="FX_IDC" if exchange_type == "forex" else "BINANCE",
             interval=Interval.INTERVAL_1_MINUTE
         )
         return handler.get_analysis()
@@ -51,14 +56,14 @@ def get_analysis(symbol, exchange):
         print("Analysis error:", symbol, e)
         return None
 
-# ================= SCORE ENGINE =================
-def score_signal(symbol, exchange):
-    a1 = get_analysis(symbol, exchange)
-    if not a1:
+# ================= SCORE ENGINE (LEVEL 4 FILTER) =================
+def evaluate(symbol, market_type):
+    a = get_analysis(symbol, market_type)
+    if not a:
         return None
 
-    s = a1.summary
-    ind = a1.indicators
+    s = a.summary
+    ind = a.indicators
 
     rsi = ind.get("RSI", 50)
 
@@ -72,11 +77,11 @@ def score_signal(symbol, exchange):
 
     confidence = max(buy, sell) / total
 
-    # 🔥 STRONG FILTER (IMPORTANT)
-    if confidence < 0.60:
+    # ❌ weak signal filter
+    if confidence < 0.62:
         return None
 
-    # TREND DECISION
+    # direction logic
     if buy > sell and rsi < 70:
         return "BUY", confidence, rsi
 
@@ -85,13 +90,15 @@ def score_signal(symbol, exchange):
 
     return None
 
-# ================= FORMAT (YOUR STYLE) =================
+# ================= FORMAT (YOUR EXACT STYLE) =================
 def format_signal(name, direction, confidence, rsi):
-    now = datetime.now().strftime("%I:%M %p")
+    now = now_ng()
 
-    expiry1 = (datetime.now()).strftime("%I:%M %p")
-    expiry2 = (datetime.now()).strftime("%I:%M %p")
-    expiry3 = (datetime.now()).strftime("%I:%M %p")
+    entry = now.strftime("%I:%M %p")
+
+    m1 = (now + timedelta(minutes=2)).strftime("%I:%M %p")
+    m2 = (now + timedelta(minutes=4)).strftime("%I:%M %p")
+    m3 = (now + timedelta(minutes=6)).strftime("%I:%M %p")
 
     return f"""
 🤖 AlphaSignalsBot
@@ -99,46 +106,54 @@ def format_signal(name, direction, confidence, rsi):
 
 📉 {name}
 ⏰ Expiry: 2 minutes
-📍 Entry Time: {now}
+📍 Entry Time: {entry}
 
 📈 Direction: {direction} {"🟢" if direction=="BUY" else "🟥"}
 💯 Confidence: {int(confidence*100)}%
 📉 RSI: {round(rsi)}
 
 🎯 Martingale Levels:
-🔁 Level 1 → {expiry1}
-🔁 Level 2 → {expiry2}
-🔁 Level 3 → {expiry3}
+🔁 Level 1 → {m1}
+🔁 Level 2 → {m2}
+🔁 Level 3 → {m3}
 """
 
-# ================= BOT LOOP =================
-def bot_loop():
-    print("🚀 LEVEL 3 GOD MODE ACTIVE")
-    send_signal("🤖 AlphaSignalsBot LIVE 🚀")
+# ================= BOT LOOP (LEVEL 4 CORE) =================
+def bot():
+    print("🚀 LEVEL 4 GOD SYSTEM ACTIVE")
+    send_signal("🤖 AlphaSignalsBot LEVEL 4 LIVE 🚀")
 
     while True:
         for symbol, market, name in MARKETS:
             now = time.time()
 
+            # cooldown per asset
             if symbol in last_signal_time and now - last_signal_time[symbol] < COOLDOWN:
                 continue
 
-            result = score_signal(symbol, market)
+            result = evaluate(symbol, market)
 
             if result:
                 direction, confidence, rsi = result
 
+                # 🔥 LEVEL 4 CORE: TREND CYCLE FILTER
+                if symbol in last_trend:
+                    if last_trend[symbol] == direction:
+                        continue  # ❌ ignore same trend signal
+
+                # update trend memory
+                last_trend[symbol] = direction
+                last_signal_time[symbol] = now
+
                 msg = format_signal(name, direction, confidence, rsi)
                 send_signal(msg)
 
-                last_signal_time[symbol] = now
+        time.sleep(15)
 
-        time.sleep(20)
-
-# ================= ROUTE =================
+# ================= FLASK =================
 @app.route("/")
 def home():
-    return "🤖 AlphaSignalsBot Running"
+    return "🤖 LEVEL 4 GOD SYSTEM ACTIVE"
 
 # ================= START =================
-Thread(target=bot_loop).start()
+Thread(target=bot).start()
