@@ -7,90 +7,83 @@ from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
 
-# ================= ENV =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-if not BOT_TOKEN or not CHAT_ID:
-    print("❌ Missing BOT_TOKEN or CHAT_ID")
+# ================= MARKETS =================
+MARKETS = [
+    ("EURUSD", "forex"),
+    ("GBPUSD", "forex"),
+    ("USDJPY", "forex"),
+    ("BTCUSDT", "crypto"),
+    ("ETHUSDT", "crypto"),
+    ("XAUUSD", "forex")  # GOLD
+]
 
-# ================= SETTINGS =================
-PAIRS = ["EURUSD", "GBPUSD", "USDJPY"]
-COOLDOWN = 300  # 5 minutes per pair
+COOLDOWN = 300
 last_signal_time = {}
 
 # ================= TELEGRAM =================
 def send_signal(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    for _ in range(3):
-        try:
-            requests.post(url, data={"chat_id": CHAT_ID, "text": message})
-            print("📩 Sent:", message)
-            return
-        except:
-            time.sleep(2)
+    try:
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+        print("📩 Sent:", message)
+    except Exception as e:
+        print("❌ Send error:", e)
 
 # ================= ANALYSIS =================
-def get_analysis(pair, interval):
+def get_analysis(symbol, screener, interval):
     try:
         handler = TA_Handler(
-            symbol=pair,
-            screener="forex",
-            exchange="FX_IDC",
+            symbol=symbol,
+            screener=screener,
+            exchange="BINANCE" if screener == "crypto" else "FX_IDC",
             interval=interval
         )
         return handler.get_analysis()
     except Exception as e:
-        print(f"❌ Error {pair}:", e)
+        print(f"❌ {symbol} error:", e)
         return None
 
-# ================= ELITE STRATEGY =================
-def elite_signal(pair):
-    a1 = get_analysis(pair, Interval.INTERVAL_1_MINUTE)
-    a5 = get_analysis(pair, Interval.INTERVAL_5_MINUTES)
+# ================= SMART STRATEGY =================
+def elite_signal(symbol, screener):
+    a1 = get_analysis(symbol, screener, Interval.INTERVAL_1_MINUTE)
+    a5 = get_analysis(symbol, screener, Interval.INTERVAL_5_MINUTES)
 
     if not a1 or not a5:
         return None
 
     s1 = a1.summary
     s5 = a5.summary
-    ind = a1.indicators
+    rsi = a1.indicators.get("RSI", 50)
 
-    rsi = ind.get("RSI", 50)
+    print(f"{symbol} → {s1['RECOMMENDATION']} / {s5['RECOMMENDATION']} (RSI {rsi})")
 
-    # --- Trend alignment ---
-    if s1["RECOMMENDATION"] == "STRONG_BUY" and s5["RECOMMENDATION"] in ["BUY", "STRONG_BUY"]:
-        if rsi < 70:  # avoid overbought
-            confidence = (s1["BUY"] + s5["BUY"]) / (
-                s1["BUY"] + s1["SELL"] + s1["NEUTRAL"] +
-                s5["BUY"] + s5["SELL"] + s5["NEUTRAL"]
-            )
+    # 🔥 RELAXED CONDITIONS (MORE SIGNALS)
+    if s1["RECOMMENDATION"] in ["BUY", "STRONG_BUY"] and s5["RECOMMENDATION"] in ["BUY", "STRONG_BUY"]:
+        if rsi < 75:
+            confidence = (s1["BUY"] + s5["BUY"]) / 40
             return "BUY", confidence, rsi
 
-    if s1["RECOMMENDATION"] == "STRONG_SELL" and s5["RECOMMENDATION"] in ["SELL", "STRONG_SELL"]:
-        if rsi > 30:  # avoid oversold
-            confidence = (s1["SELL"] + s5["SELL"]) / (
-                s1["BUY"] + s1["SELL"] + s1["NEUTRAL"] +
-                s5["BUY"] + s5["SELL"] + s5["NEUTRAL"]
-            )
+    if s1["RECOMMENDATION"] in ["SELL", "STRONG_SELL"] and s5["RECOMMENDATION"] in ["SELL", "STRONG_SELL"]:
+        if rsi > 25:
+            confidence = (s1["SELL"] + s5["SELL"]) / 40
             return "SELL", confidence, rsi
 
     return None
 
 # ================= FORMAT =================
-def format_signal(pair, direction, confidence, rsi):
-    flag = "🇪🇺" if "EUR" in pair else "🇬🇧" if "GBP" in pair else "🇯🇵"
-
+def format_signal(symbol, direction, confidence, rsi):
     return f"""
-{flag} {pair}
+📊 {symbol}
 
 {'🟢 BUY' if direction == 'BUY' else '🔴 SELL'}
 Confidence: {round(confidence*100)}%
 RSI: {round(rsi)}
 
-Timeframe: 1M (Confirmed with 5M)
-
-⚡ Trade immediately
+⏱ 1M (confirmed 5M)
+⚡ Enter now
 """
 
 # ================= BOT LOOP =================
@@ -99,29 +92,32 @@ def bot_loop():
     send_signal("🔥 ELITE BOT IS LIVE")
 
     while True:
-        for pair in PAIRS:
+        for symbol, screener in MARKETS:
             now = time.time()
 
-            # cooldown
-            if pair in last_signal_time and now - last_signal_time[pair] < COOLDOWN:
+            if symbol in last_signal_time and now - last_signal_time[symbol] < COOLDOWN:
                 continue
 
-            result = elite_signal(pair)
+            result = elite_signal(symbol, screener)
 
             if result:
                 direction, confidence, rsi = result
 
-                if confidence >= 0.65:  # final filter
-                    msg = format_signal(pair, direction, confidence, rsi)
+                if confidence >= 0.55:  # 🔥 more signals now
+                    msg = format_signal(symbol, direction, confidence, rsi)
                     send_signal(msg)
-                    last_signal_time[pair] = now
+                    last_signal_time[symbol] = now
 
-        time.sleep(30)
+        time.sleep(20)
 
-# ================= ROUTE =================
+# ================= SAFE START =================
+def start_bot():
+    thread = Thread(target=bot_loop)
+    thread.daemon = True
+    thread.start()
+
+start_bot()
+
 @app.route("/")
 def home():
     return "🔥 ELITE BOT RUNNING"
-
-# ================= START =================
-Thread(target=bot_loop).start()
