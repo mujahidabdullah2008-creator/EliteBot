@@ -3,11 +3,11 @@ import threading
 import time
 from datetime import datetime
 import pytz
+
 from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
 
-# ===== CONFIG =====
 SYMBOLS = [
     ("EURUSD", "FX_IDC:EURUSD"),
     ("GBPUSD", "FX_IDC:GBPUSD"),
@@ -17,109 +17,113 @@ SYMBOLS = [
     ("XAUUSD", "OANDA:XAUUSD")
 ]
 
-TIMEFRAME = Interval.INTERVAL_1_MINUTE  # ✅ FIXED (no 5-minute bug)
-SIGNAL_COOLDOWN = 120  # 2 minutes cycle
-
 last_signal_time = 0
+COOLDOWN = 120  # 2 minutes
 
 
-# ===== ANALYSIS ENGINE =====
-def get_analysis(symbol, screener):
+# ===== GET ANALYSIS =====
+def get_analysis(name, symbol):
     handler = TA_Handler(
-        symbol=screener.split(":")[1],
-        screener="crypto" if "BINANCE" in screener else "forex",
-        exchange=screener.split(":")[0] if ":" in screener else "FX_IDC",
-        interval=TIMEFRAME
+        symbol=symbol.split(":")[1],
+        screener="crypto" if "BINANCE" in symbol else "forex",
+        exchange=symbol.split(":")[0],
+        interval=Interval.INTERVAL_1_MINUTE
     )
     return handler.get_analysis()
 
 
-def generate_signal():
-    global last_signal_time
+# ===== LEVEL 8 SMART SCORE ENGINE =====
+def calculate_signal(name, symbol):
+    analysis = get_analysis(name, symbol)
 
-    now = time.time()
+    rsi = analysis.indicators.get("RSI", 50)
+    recommendation = analysis.summary["RECOMMENDATION"]
 
-    # prevent spam signals (IMPORTANT FIX)
-    if now - last_signal_time < SIGNAL_COOLDOWN:
+    # 🔥 TREND FILTER (KEY UPGRADE)
+    trend = recommendation  # BUY / SELL / NEUTRAL
+
+    if trend not in ["BUY", "SELL"]:
         return None
 
-    for name, symbol in SYMBOLS:
-        try:
-            analysis = get_analysis(name, symbol)
+    # 🔥 SCORE ENGINE
+    rsi_score = abs(50 - rsi)
 
-            rsi = analysis.indicators.get("RSI", 50)
-            action = analysis.summary["RECOMMENDATION"]
+    if rsi_score < 6:
+        return None  # weak market
 
-            direction = "BUY 🟢" if "BUY" in action else "SELL 🔴"
+    confidence = 50 + rsi_score
 
-            confidence = min(85, max(55, int(abs(50 - rsi) + 55)))
+    if confidence < 65:
+        return None
 
-            if confidence < 60:
-                continue
+    direction = "BUY 🟢" if trend == "BUY" else "SELL 🔴"
 
-            last_signal_time = now
-
-            return {
-                "asset": name,
-                "direction": direction,
-                "rsi": round(rsi, 2),
-                "confidence": confidence
-            }
-
-        except Exception as e:
-            print("ERROR:", e)
-
-    return None
+    return {
+        "asset": name,
+        "direction": direction,
+        "rsi": round(rsi, 2),
+        "confidence": int(min(confidence, 92))
+    }
 
 
-# ===== FORMAT (YOUR REQUEST STYLE) =====
+# ===== FORMAT SIGNAL =====
 def format_signal(sig):
     now = datetime.now(pytz.timezone("Africa/Lagos"))
-    entry = now.strftime("%I:%M %p")
+    t = now.strftime("%I:%M %p")
 
     return f"""
 🤖 AlphaSignalsBot
-🚨 SIGNAL ALERT  
+🚨 LEVEL 8 SIGNAL ENGINE
 
 📉 {sig['asset']}
 ⏰ Expiry: 2 minutes
-📍 Entry Time: {entry}
+📍 Entry Time: {t}
 
 📈 Direction: {sig['direction']}
 💯 Confidence: {sig['confidence']}%
 📉 RSI: {sig['rsi']}
 
 🎯 Martingale Levels:
-🔁 Level 1 → {(now).strftime('%I:%M %p')}
-🔁 Level 2 → {(now).strftime('%I:%M %p')}
-🔁 Level 3 → {(now).strftime('%I:%M %p')}
+🔁 Level 1 → {t}
+🔁 Level 2 → {t}
+🔁 Level 3 → {t}
 """
 
 
-# ===== BACKGROUND ENGINE =====
-def bot_loop():
-    print("🚀 LEVEL 7 FIXED ENGINE RUNNING")
+# ===== ENGINE LOOP =====
+def bot():
+    global last_signal_time
+    print("🚀 LEVEL 8 ENGINE ACTIVE")
 
     while True:
-        signal = generate_signal()
+        now = time.time()
 
-        if signal:
-            print(format_signal(signal))
-        else:
-            print("⏳ No valid signal (waiting trend cycle)")
+        if now - last_signal_time < COOLDOWN:
+            time.sleep(5)
+            continue
 
-        time.sleep(30)
+        for name, symbol in SYMBOLS:
+            try:
+                sig = calculate_signal(name, symbol)
+
+                if sig:
+                    last_signal_time = now
+                    print(format_signal(sig))
+                    break
+
+            except Exception as e:
+                print("ERROR:", e)
+
+        time.sleep(10)
 
 
-# ===== FLASK ROUTE =====
+# ===== FLASK =====
 @app.route("/")
 def home():
-    return jsonify({"status": "LEVEL 7 FIXED ENGINE ACTIVE"})
+    return jsonify({"status": "LEVEL 8 ENGINE RUNNING"})
 
 
-# ===== START BOT THREAD =====
-threading.Thread(target=bot_loop, daemon=True).start()
-
+threading.Thread(target=bot, daemon=True).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
