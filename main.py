@@ -1,27 +1,40 @@
 from flask import Flask, jsonify, request
 from tradingview_ta import TA_Handler, Interval
-import traceback
+import time
 
 app = Flask(__name__)
 
 # =========================
 # CONFIG
 # =========================
-DEFAULT_SYMBOL = "EURUSD"
-DEFAULT_EXCHANGE = "FX_IDC"
-DEFAULT_SCREENER = "forex"
+SYMBOL = "EURUSD"
+SCREENER = "forex"
+EXCHANGE = "FX_IDC"
+
+last_signal_time = 0
 
 
 # =========================
-# CORE ENGINE
+# ANALYSIS FUNCTION
 # =========================
-def get_analysis(symbol):
+def get_signal(symbol):
+    global last_signal_time
+
     try:
+        now = time.time()
+
+        # ⛔ Enforce 2-minute cycle
+        if now - last_signal_time < 120:
+            return {
+                "signal": "WAIT",
+                "reason": "Waiting 2-minute cycle"
+            }
+
         handler = TA_Handler(
             symbol=symbol,
-            screener=DEFAULT_SCREENER,
-            exchange=DEFAULT_EXCHANGE,
-            interval=Interval.INTERVAL_2_MINUTES
+            screener=SCREENER,
+            exchange=EXCHANGE,
+            interval=Interval.INTERVAL_1_MINUTE
         )
 
         analysis = handler.get_analysis()
@@ -29,35 +42,39 @@ def get_analysis(symbol):
 
         price = indicators.get("close")
         rsi = indicators.get("RSI")
+        ema50 = indicators.get("EMA50")
         macd = indicators.get("MACD.macd")
         macd_signal = indicators.get("MACD.signal")
 
-        # SAFE CHECK (prevents null crashes)
-        if price is None or rsi is None or macd is None or macd_signal is None:
+        # ✅ Prevent NULL crash
+        if None in [price, rsi, ema50, macd, macd_signal]:
             return {
                 "price": None,
-                "signal": "WAITING",
-                "reason": "Insufficient indicator data"
+                "signal": "WAIT",
+                "reason": "Data not ready"
             }
 
         # =========================
-        # SIMPLE STRATEGY LOGIC
+        # SMART STRATEGY
         # =========================
 
-        if rsi <= 30 and macd > macd_signal:
+        # BUY conditions
+        if price > ema50 and rsi < 35 and macd > macd_signal:
             signal = "BUY"
+            last_signal_time = now
 
-        elif rsi >= 70 and macd < macd_signal:
+        # SELL conditions
+        elif price < ema50 and rsi > 65 and macd < macd_signal:
             signal = "SELL"
+            last_signal_time = now
 
         else:
             signal = "WAIT"
 
         return {
-            "price": price,
-            "rsi": rsi,
-            "macd": macd,
-            "macd_signal": macd_signal,
+            "price": round(price, 5),
+            "rsi": round(rsi, 2),
+            "ema50": round(ema50, 5),
             "signal": signal
         }
 
@@ -72,20 +89,19 @@ def get_analysis(symbol):
 # =========================
 # ROUTES
 # =========================
+
 @app.route("/")
 def home():
     return jsonify({
         "status": "BOT RUNNING",
-        "message": "2-MINUTE ENGINE ACTIVE"
+        "engine": "SMART 2-MIN ENGINE"
     })
 
 
-@app.route("/signal", methods=["GET"])
+@app.route("/signal")
 def signal():
-    symbol = request.args.get("symbol", DEFAULT_SYMBOL)
-
-    result = get_analysis(symbol)
-
+    symbol = request.args.get("symbol", SYMBOL)
+    result = get_signal(symbol)
     return jsonify(result)
 
 
@@ -95,7 +111,7 @@ def health():
 
 
 # =========================
-# RUN SERVER
+# START
 # =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
