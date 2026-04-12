@@ -15,20 +15,13 @@ last_signal_time = 0
 
 
 # =========================
-# ANALYSIS FUNCTION
+# SIGNAL ENGINE
 # =========================
 def get_signal(symbol):
     global last_signal_time
 
     try:
         now = time.time()
-
-        # ⛔ Enforce 2-minute cycle
-        if now - last_signal_time < 120:
-            return {
-                "signal": "WAIT",
-                "reason": "Waiting 2-minute cycle"
-            }
 
         handler = TA_Handler(
             symbol=symbol,
@@ -46,7 +39,7 @@ def get_signal(symbol):
         macd = indicators.get("MACD.macd")
         macd_signal = indicators.get("MACD.signal")
 
-        # ✅ Prevent NULL crash
+        # 🚫 Prevent bad data
         if None in [price, rsi, ema50, macd, macd_signal]:
             return {
                 "price": None,
@@ -54,27 +47,44 @@ def get_signal(symbol):
                 "reason": "Data not ready"
             }
 
+        # ⛔ 2-minute delay (ONLY after a trade)
+        if now - last_signal_time < 120:
+            return {
+                "price": round(price, 5),
+                "rsi": round(rsi, 2),
+                "signal": "WAIT",
+                "reason": "Cooldown active"
+            }
+
         # =========================
-        # SMART STRATEGY
+        # SMART LOGIC
         # =========================
 
-        # BUY conditions
-        if price > ema50 and rsi < 35 and macd > macd_signal:
+        signal = "WAIT"
+
+        # 🔥 REVERSAL (strong signals)
+        if rsi < 25:
             signal = "BUY"
-            last_signal_time = now
 
-        # SELL conditions
-        elif price < ema50 and rsi > 65 and macd < macd_signal:
+        elif rsi > 75:
             signal = "SELL"
-            last_signal_time = now
 
-        else:
-            signal = "WAIT"
+        # 📈 TREND CONFIRMATION
+        elif price > ema50 and rsi < 45 and macd > macd_signal:
+            signal = "BUY"
+
+        elif price < ema50 and rsi > 55 and macd < macd_signal:
+            signal = "SELL"
+
+        # Save time ONLY if trade happens
+        if signal in ["BUY", "SELL"]:
+            last_signal_time = now
 
         return {
             "price": round(price, 5),
             "rsi": round(rsi, 2),
             "ema50": round(ema50, 5),
+            "macd": round(macd, 5),
             "signal": signal
         }
 
@@ -94,15 +104,14 @@ def get_signal(symbol):
 def home():
     return jsonify({
         "status": "BOT RUNNING",
-        "engine": "SMART 2-MIN ENGINE"
+        "engine": "SMART ACTIVE ENGINE"
     })
 
 
 @app.route("/signal")
 def signal():
     symbol = request.args.get("symbol", SYMBOL)
-    result = get_signal(symbol)
-    return jsonify(result)
+    return jsonify(get_signal(symbol))
 
 
 @app.route("/health")
