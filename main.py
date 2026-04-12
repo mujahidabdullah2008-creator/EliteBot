@@ -1,16 +1,12 @@
 import os
 import time
 import requests
-from datetime import datetime, timedelta
-from threading import Thread
 from flask import Flask
+from threading import Thread
 from tradingview_ta import TA_Handler, Interval
-import pytz
 
-# ================= APP =================
 app = Flask(__name__)
 
-# ================= ENV =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
@@ -24,154 +20,105 @@ MARKETS = [
     ("USDJPY", "forex"),
     ("BTCUSDT", "crypto"),
     ("ETHUSDT", "crypto"),
-    ("XAUUSD", "forex")  # GOLD
+    ("XAUUSD", "forex")
 ]
 
-# ================= SETTINGS =================
-COOLDOWN = 180  # 3 minutes per pair
-last_signal_time = {}
-
-tz = pytz.timezone("Africa/Lagos")  # Set your timezone
+COOLDOWN = 120
+last_signal = {}
 
 # ================= TELEGRAM =================
-def send_signal(message):
+def send(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    for _ in range(3):
-        try:
-            requests.post(url, data={"chat_id": CHAT_ID, "text": message})
-            print("📩 Sent:", message)
-            return
-        except Exception as e:
-            print("❌ Telegram Error:", e)
-            time.sleep(2)
+    try:
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
+        print("📩 SENT")
+    except Exception as e:
+        print("Telegram error:", e)
 
-# ================= ANALYSIS =================
-def get_analysis(pair, interval, screener="forex"):
+# ================= DATA =================
+def get_data(symbol, market):
+    exchange = "FX_IDC" if market == "forex" else "BINANCE"
+
     try:
         handler = TA_Handler(
-            symbol=pair,
-            screener=screener,
-            exchange="FX_IDC" if screener=="forex" else "BINANCE",
-            interval=interval
+            symbol=symbol,
+            screener="forex" if market == "forex" else "crypto",
+            exchange=exchange,
+            interval=Interval.INTERVAL_1_MINUTE
         )
         return handler.get_analysis()
-    except Exception as e:
-        print(f"❌ Error {pair}:", e)
+    except:
         return None
 
-# ================= ELITE SIGNAL LOGIC =================
-def elite_signal(pair, screener):
-    a1 = get_analysis(pair, Interval.INTERVAL_1_MINUTE, screener)
-    a5 = get_analysis(pair, Interval.INTERVAL_5_MINUTES, screener)
-    a15 = get_analysis(pair, Interval.INTERVAL_15_MINUTES, screener)
-
-    if not a1 or not a5 or not a15:
+# ================= SIGNAL ENGINE (FIXED) =================
+def signal(symbol, market):
+    data = get_data(symbol, market)
+    if not data:
         return None
 
-    s1 = a1.summary
-    s5 = a5.summary
-    s15 = a15.summary
-    ind = a1.indicators
+    s = data.summary
+    ind = data.indicators
+
+    buy = s.get("BUY", 0)
+    sell = s.get("SELL", 0)
+    total = buy + sell + s.get("NEUTRAL", 1)
 
     rsi = ind.get("RSI", 50)
 
-    # --- Trend alignment ---
-    if s1["RECOMMENDATION"] in ["STRONG_BUY", "BUY"] and s5["RECOMMENDATION"] in ["STRONG_BUY", "BUY"]:
-        if rsi < 70:
-            confidence = (s1["BUY"] + s5["BUY"]) / (
-                s1["BUY"] + s1["SELL"] + s1["NEUTRAL"] +
-                s5["BUY"] + s5["SELL"] + s5["NEUTRAL"]
-            )
-            return "BUY", confidence, rsi
+    # SIMPLE FAST MODE LOGIC (IMPORTANT FIX)
+    if buy > sell and rsi < 75:
+        return "BUY", min(0.6 + (buy/total)*0.3, 0.95), rsi
 
-    if s1["RECOMMENDATION"] in ["STRONG_SELL", "SELL"] and s5["RECOMMENDATION"] in ["STRONG_SELL", "SELL"]:
-        if rsi > 30:
-            confidence = (s1["SELL"] + s5["SELL"]) / (
-                s1["BUY"] + s1["SELL"] + s1["NEUTRAL"] +
-                s5["BUY"] + s5["SELL"] + s5["NEUTRAL"]
-            )
-            return "SELL", confidence, rsi
+    if sell > buy and rsi > 25:
+        return "SELL", min(0.6 + (sell/total)*0.3, 0.95), rsi
 
     return None
 
-# ================= FORMAT SIGNAL =================
-def format_signal(pair, direction, confidence, rsi):
-    now = datetime.now(tz)
-
-    entry_time = now.strftime("%I:%M %p")
-    expiry_time = (now + timedelta(minutes=2)).strftime("%I:%M %p")
-
-    mg1 = (now + timedelta(minutes=2)).strftime("%I:%M %p")
-    mg2 = (now + timedelta(minutes=4)).strftime("%I:%M %p")
-    mg3 = (now + timedelta(minutes=6)).strftime("%I:%M %p")
-
-    # Flag icons
-    if "EUR" in pair:
-        flag = "🇪🇺"
-    elif "GBP" in pair:
-        flag = "🇬🇧"
-    elif "USDJPY" in pair:
-        flag = "🇯🇵"
-    elif "BTC" in pair or "ETH" in pair:
-        flag = "🪙"
-    elif "XAU" in pair:
-        flag = "🥇"
-    else:
-        flag = "🌍"
-
-    direction_icon = "🟥 SELL" if direction == "SELL" else "🟩 BUY"
+# ================= FORMAT =================
+def format_msg(symbol, direction, confidence, rsi):
+    emoji = "🟢 BUY" if direction == "BUY" else "🔴 SELL"
 
     return f"""
-🤖 ELITE AI BOT
-🚨 SIGNAL ALERT  
+🤖 ELITE SIGNAL ENGINE
 
-📊 {flag} {pair}
-⏰ Expiry: 2 minutes
-📍 Entry Time: {entry_time}
+📊 Asset: {symbol}
+📉 Direction: {emoji}
 
-📈 Direction: {direction_icon}
 💯 Confidence: {round(confidence*100)}%
 📊 RSI: {round(rsi)}
 
-🎯 Martingale Levels:
-🔁 Level 1 → {mg1}
-🔁 Level 2 → {mg2}
-🔁 Level 3 → {mg3}
-
-⚡ Fast Trade Opportunity.
+⚡ FAST MODE ACTIVE
 """
 
-# ================= BOT LOOP =================
-def bot_loop():
-    print("🚀 ELITE BOT STARTED")
-    send_signal("🔥 ELITE BOT IS LIVE")
+# ================= LOOP =================
+def run_bot():
+    print("🚀 BOT STARTED")
+    send("🔥 ELITE BOT LIVE (FIXED ENGINE)")
 
     while True:
-        for pair, market_type in MARKETS:
+        for symbol, market in MARKETS:
             now = time.time()
 
-            # cooldown
-            if pair in last_signal_time and now - last_signal_time[pair] < COOLDOWN:
+            if symbol in last_signal and now - last_signal[symbol] < COOLDOWN:
                 continue
 
-            result = elite_signal(pair, "forex" if market_type=="forex" else "crypto")
+            result = signal(symbol, market)
 
             if result:
                 direction, confidence, rsi = result
-                if confidence >= 0.55:  # less strict for faster signals
-                    msg = format_signal(pair, direction, confidence, rsi)
-                    send_signal(msg)
-                    last_signal_time[pair] = now
 
-        time.sleep(20)  # faster loop
+                if confidence > 0.55:
+                    send(format_msg(symbol, direction, confidence, rsi))
+                    last_signal[symbol] = now
 
-# ================= ROUTE =================
+        time.sleep(10)
+
+# ================= FLASK =================
 @app.route("/")
 def home():
-    return "🔥 ELITE BOT RUNNING"
+    return "🔥 ELITE BOT RUNNING (FIXED)"
 
-# ================= START =================
-Thread(target=bot_loop).start()
+Thread(target=run_bot).start()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
