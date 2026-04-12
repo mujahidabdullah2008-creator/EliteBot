@@ -1,172 +1,125 @@
-import os
+from flask import Flask, jsonify
+import threading
 import time
-import requests
 from datetime import datetime
-from threading import Thread
-from flask import Flask
-from tradingview_ta import TA_Handler, Interval
-
-app = Flask(__name__)
-import os
-import time
-import requests
-from datetime import datetime, timedelta
-from threading import Thread
-from flask import Flask
+import pytz
 from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-MARKETS = [
-    ("EURUSD", "forex"),
-    ("GBPUSD", "forex"),
-    ("USDJPY", "forex"),
-    ("BTCUSDT", "crypto"),
-    ("ETHUSDT", "crypto"),
-    ("XAUUSD", "forex"),
+# ===== CONFIG =====
+SYMBOLS = [
+    ("EURUSD", "FX_IDC:EURUSD"),
+    ("GBPUSD", "FX_IDC:GBPUSD"),
+    ("USDJPY", "FX_IDC:USDJPY"),
+    ("BTCUSDT", "BINANCE:BTCUSDT"),
+    ("ETHUSDT", "BINANCE:ETHUSDT"),
+    ("XAUUSD", "OANDA:XAUUSD")
 ]
 
-# ================= STATE CONTROL =================
-active_trades = {}   # symbol -> trade data
-COOLDOWN = 120
+TIMEFRAME = Interval.INTERVAL_1_MINUTE  # ✅ FIXED (no 5-minute bug)
+SIGNAL_COOLDOWN = 120  # 2 minutes cycle
 
-# ================= TELEGRAM =================
-def send(msg):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
-    except:
-        pass
+last_signal_time = 0
 
-# ================= ANALYSIS =================
+
+# ===== ANALYSIS ENGINE =====
 def get_analysis(symbol, screener):
-    try:
-        handler = TA_Handler(
-            symbol=symbol,
-            screener=screener,
-            exchange="FX_IDC" if screener == "forex" else "BINANCE",
-            interval=Interval.INTERVAL_1_MINUTE
-        )
-        return handler.get_analysis()
-    except:
+    handler = TA_Handler(
+        symbol=screener.split(":")[1],
+        screener="crypto" if "BINANCE" in screener else "forex",
+        exchange=screener.split(":")[0] if ":" in screener else "FX_IDC",
+        interval=TIMEFRAME
+    )
+    return handler.get_analysis()
+
+
+def generate_signal():
+    global last_signal_time
+
+    now = time.time()
+
+    # prevent spam signals (IMPORTANT FIX)
+    if now - last_signal_time < SIGNAL_COOLDOWN:
         return None
 
-# ================= SIGNAL ENGINE =================
-def generate_signal(symbol, screener):
-    a = get_analysis(symbol, screener)
-    if not a:
-        return None
+    for name, symbol in SYMBOLS:
+        try:
+            analysis = get_analysis(name, symbol)
 
-    s = a.summary
-    ind = a.indicators
+            rsi = analysis.indicators.get("RSI", 50)
+            action = analysis.summary["RECOMMENDATION"]
 
-    buy = s["BUY"]
-    sell = s["SELL"]
-    rsi = ind.get("RSI", 50)
+            direction = "BUY 🟢" if "BUY" in action else "SELL 🔴"
 
-    if buy >= sell:
-        direction = "BUY"
-        strength = buy / max(buy + sell, 1)
-    else:
-        direction = "SELL"
-        strength = sell / max(buy + sell, 1)
+            confidence = min(85, max(55, int(abs(50 - rsi) + 55)))
 
-    confidence = 0.50 + (strength * 0.30)
+            if confidence < 60:
+                continue
 
-    if direction == "BUY" and rsi < 70:
-        confidence += 0.05
-    if direction == "SELL" and rsi > 30:
-        confidence += 0.05
+            last_signal_time = now
 
-    return direction, min(confidence, 0.92), rsi
+            return {
+                "asset": name,
+                "direction": direction,
+                "rsi": round(rsi, 2),
+                "confidence": confidence
+            }
 
-# ================= FORMAT =================
-def format_signal(symbol, direction, confidence, rsi, stage):
-    now = datetime.now().strftime("%I:%M %p")
+        except Exception as e:
+            print("ERROR:", e)
 
-    flag = "🇪🇺" if "EUR" in symbol else "🇬🇧" if "GBP" in symbol else "🇯🇵" if "JPY" in symbol else "₿" if "BTC" in symbol else "💰"
+    return None
+
+
+# ===== FORMAT (YOUR REQUEST STYLE) =====
+def format_signal(sig):
+    now = datetime.now(pytz.timezone("Africa/Lagos"))
+    entry = now.strftime("%I:%M %p")
 
     return f"""
 🤖 AlphaSignalsBot
-🚨 SIGNAL ALERT ({stage})
+🚨 SIGNAL ALERT  
 
-📉 {flag} {symbol}
+📉 {sig['asset']}
 ⏰ Expiry: 2 minutes
-📍 Entry Time: {now}
+📍 Entry Time: {entry}
 
-📈 Direction: {'BUY 🟢' if direction == 'BUY' else 'SELL 🟥'}
-💯 Confidence: {round(confidence * 100)}%
-📉 RSI: {round(rsi)}
+📈 Direction: {sig['direction']}
+💯 Confidence: {sig['confidence']}%
+📉 RSI: {sig['rsi']}
 
 🎯 Martingale Levels:
-🔁 Level 1 → +2 min
-🔁 Level 2 → +4 min
-🔁 Level 3 → +6 min
+🔁 Level 1 → {(now).strftime('%I:%M %p')}
+🔁 Level 2 → {(now).strftime('%I:%M %p')}
+🔁 Level 3 → {(now).strftime('%I:%M %p')}
 """
 
-# ================= TRADE SYSTEM =================
-def bot():
-    print("🚀 LEVEL 7 TRADE ENGINE ACTIVE")
-    send("🚀 AlphaSignalsBot LEVEL 7 FIX ONLINE")
+
+# ===== BACKGROUND ENGINE =====
+def bot_loop():
+    print("🚀 LEVEL 7 FIXED ENGINE RUNNING")
 
     while True:
-        now = datetime.now()
+        signal = generate_signal()
 
-        for symbol, market in MARKETS:
+        if signal:
+            print(format_signal(signal))
+        else:
+            print("⏳ No valid signal (waiting trend cycle)")
 
-            # ================= BLOCK ACTIVE TRADE =================
-            if symbol in active_trades:
-                trade = active_trades[symbol]
+        time.sleep(30)
 
-                entry_time = trade["time"]
 
-                # M1
-                if not trade["m1"] and now >= entry_time + timedelta(minutes=2):
-                    send(format_signal(symbol, trade["dir"], trade["conf"], trade["rsi"], "M1"))
-                    trade["m1"] = True
-
-                # M2
-                if not trade["m2"] and now >= entry_time + timedelta(minutes=4):
-                    send(format_signal(symbol, trade["dir"], trade["conf"], trade["rsi"], "M2"))
-                    trade["m2"] = True
-
-                # M3
-                if not trade["m3"] and now >= entry_time + timedelta(minutes=6):
-                    send(format_signal(symbol, trade["dir"], trade["conf"], trade["rsi"], "M3"))
-                    trade["m3"] = True
-                    del active_trades[symbol]
-
-                continue
-
-            # ================= NEW SIGNAL =================
-            result = generate_signal(symbol, market)
-
-            if result:
-                direction, confidence, rsi = result
-
-                if confidence >= 0.55:
-
-                    send(format_signal(symbol, direction, confidence, rsi, "ENTRY"))
-
-                    active_trades[symbol] = {
-                        "dir": direction,
-                        "conf": confidence,
-                        "rsi": rsi,
-                        "time": now,
-                        "m1": False,
-                        "m2": False,
-                        "m3": False
-                    }
-
-        time.sleep(5)
-
-# ================= ROUTE =================
+# ===== FLASK ROUTE =====
 @app.route("/")
 def home():
-    return "LEVEL 7 FIX ACTIVE"
+    return jsonify({"status": "LEVEL 7 FIXED ENGINE ACTIVE"})
 
-# ================= START =================
-Thread(target=bot).start()
+
+# ===== START BOT THREAD =====
+threading.Thread(target=bot_loop, daemon=True).start()
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
