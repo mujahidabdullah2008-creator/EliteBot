@@ -1,113 +1,122 @@
 from flask import Flask, jsonify
 from tradingview_ta import TA_Handler, Interval
-import requests
 import os
-from datetime import datetime, timedelta
+import requests
+from datetime import datetime
 
 app = Flask(__name__)
 
-# ================= CONFIG =================
-SYMBOL = "EURUSD"
-EXCHANGE = "FX_IDC"
-SCREENER = "forex"
-
-# Telegram ENV (IMPORTANT)
+# 🔑 ENV VARIABLES (FIXED)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# ================= SIGNAL FUNCTION =================
-def get_signal():
-    try:
-        handler = TA_Handler(
-            symbol=SYMBOL,
-            screener=SCREENER,
-            exchange=EXCHANGE,
-            interval=Interval.INTERVAL_1_MINUTE
-        )
 
-        analysis = handler.get_analysis()
+# 📊 GET MARKET DATA
+def get_analysis():
+    handler = TA_Handler(
+        symbol="EURUSD",
+        screener="forex",
+        exchange="FX_IDC",
+        interval=Interval.INTERVAL_1_MINUTE  # ✅ FIXED (correct enum)
+    )
+    return handler.get_analysis()
 
-        rsi = analysis.indicators["RSI"]
-        ema50 = analysis.indicators["EMA50"]
-        macd = analysis.indicators["MACD.macd"]
-        price = analysis.indicators["close"]
 
-        signal = "WAIT"
+# 🤖 SIGNAL LOGIC (SIMPLE & CLEAN)
+def generate_signal():
+    analysis = get_analysis()
+    ind = analysis.indicators
 
-        if rsi < 30 and price > ema50:
+    price = ind.get("close")
+    rsi = ind.get("RSI")
+    ema50 = ind.get("EMA50")
+    macd = ind.get("MACD.macd")
+
+    signal = "WAIT"
+
+    if rsi and ema50 and macd:
+        if rsi < 30 and price < ema50 and macd < 0:
             signal = "BUY"
-        elif rsi > 70 and price < ema50:
+        elif rsi > 70 and price > ema50 and macd > 0:
             signal = "SELL"
 
-        return {
-            "price": price,
-            "rsi": round(rsi, 2),
-            "ema50": ema50,
-            "macd": macd,
-            "signal": signal
-        }
-
-    except Exception as e:
-        return {"error": str(e), "signal": "ERROR"}
+    return {
+        "price": price,
+        "rsi": rsi,
+        "ema50": ema50,
+        "macd": macd,
+        "signal": signal
+    }
 
 
-# ================= TELEGRAM FORMAT =================
-def send_telegram(signal_data):
-    if not BOT_TOKEN or not CHAT_ID:
-        print("❌ Telegram ENV not set")
-        return
-
-    if signal_data["signal"] == "WAIT":
-        return  # don't spam
-
+# 📩 FORMAT MESSAGE (YOUR STYLE)
+def format_message(data):
     now = datetime.now()
-    entry_time = now.strftime("%I:%M %p")
 
-    m1 = (now + timedelta(minutes=2)).strftime("%I:%M %p")
-    m2 = (now + timedelta(minutes=4)).strftime("%I:%M %p")
-    m3 = (now + timedelta(minutes=6)).strftime("%I:%M %p")
+    direction = "BUY 🟩" if data["signal"] == "BUY" else "SELL 🟥"
 
-    message = f"""
-🤖 AlphaSignalsBot
+    return f"""🤖 AlphaSignalsBot
 🚨 SIGNAL ALERT  
 
-📉 🇪🇺 EUR/USD 🇺🇸 (OTC)
-⏰ Expiry: 2 minutes
-📍 Entry Time: {entry_time}
+📉 🇪🇺 EUR/USD 🇺🇸
+⏰ Entry Time: {now.strftime('%I:%M %p')}
 
-📈 Direction: {signal_data['signal']} {"🟩" if signal_data['signal']=="BUY" else "🟥"}
+📈 Direction: {direction}
 💯 Confidence: 70%
 
-🎯 Martingale Levels:
-🔁 Level 1 → {m1}
-🔁 Level 2 → {m2}
-🔁 Level 3 → {m3}
+📊 Price: {data['price']}
+📉 RSI: {data['rsi']}
+📈 EMA50: {data['ema50']}
+📊 MACD: {data['macd']}
 """
 
+
+# 📤 SEND TO TELEGRAM (FIXED)
+def send_telegram(text):
+    if not BOT_TOKEN or not CHAT_ID:
+        return {"error": "Missing BOT_TOKEN or CHAT_ID"}
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": message})
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text
+    }
+
+    return requests.post(url, data=payload).json()
 
 
-# ================= ROUTES =================
-
+# 🌐 HOME ROUTE
 @app.route("/")
 def home():
-    return {"status": "AlphaSignalsBot Running 🤖"}
+    return jsonify({"status": "AlphaSignalsBot Running 🤖"})
 
 
+# 📊 SIGNAL CHECK
 @app.route("/signal")
 def signal():
-    data = get_signal()
-    return jsonify(data)
+    return jsonify(generate_signal())
 
 
+# 🚀 AUTO SEND SIGNAL
 @app.route("/auto")
 def auto():
-    data = get_signal()
-    send_telegram(data)
-    return jsonify({"sent": data})
+    data = generate_signal()
+
+    if data["signal"] == "WAIT":
+        return jsonify({
+            "status": "NO SIGNAL",
+            "data": data
+        })
+
+    message = format_message(data)
+    result = send_telegram(message)
+
+    return jsonify({
+        "sent_signal": data,
+        "telegram_response": result
+    })
 
 
-# ================= RUN =================
+# 🔥 RUN
 if __name__ == "__main__":
-    app.run()
+    app.run(host="0.0.0.0", port=10000)
