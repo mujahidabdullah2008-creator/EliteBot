@@ -12,211 +12,155 @@ app = Flask(__name__)
 # ==============================
 # ENV VARIABLES
 # ==============================
+from flask import Flask, jsonify
+from threading import Thread
+from tradingview_ta import TA_Handler, Interval
+from datetime import datetime
+import pytz
+import os
+import time
+
+app = Flask(__name__)
+
+# =====================
+# ENV VARIABLES
+# =====================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# ==============================
-# PAIRS (FOREX + CRYPTO + GOLD)
-# ==============================
-pairs = [
-    ("EURUSD", "forex"),
-    ("GBPUSD", "forex"),
-    ("USDJPY", "forex"),
-    ("XAUUSD", "forex"),
-    ("BTCUSDT", "crypto"),
-    ("ETHUSDT", "crypto"),
+# =====================
+# ASSETS (FOREX + CRYPTO + STOCKS + COMMODITIES)
+# =====================
+ASSETS = [
+    ("FX_IDC:EURUSD", "EUR/USD 🇪🇺🇺🇸"),
+    ("FX_IDC:GBPUSD", "GBP/USD 🇬🇧🇺🇸"),
+    ("FX_IDC:USDJPY", "USD/JPY 🇺🇸🇯🇵"),
+    ("BINANCE:BTCUSDT", "BTC/USDT ₿"),
+    ("BINANCE:ETHUSDT", "ETH/USDT ⟠"),
+    ("TVC:GOLD", "GOLD XAU/USD 🟡"),
+    ("SP:SPX", "S&P 500 📊"),
 ]
 
-# ==============================
-# SETTINGS
-# ==============================
-COOLDOWN = 300  # 5 mins
+last_signal = None
 
-last_signal_time = {}
-last_signal_direction = {}
 
-# ==============================
-# TIME (NIGERIA)
-# ==============================
-def get_time():
+# =====================
+# ANALYSIS FUNCTION
+# =====================
+def analyze(symbol):
+    try:
+        handler = TA_Handler(
+            symbol=symbol,
+            screener="forex" if "FX" in symbol else "crypto",
+            exchange="FX_IDC" if "FX" in symbol else "BINANCE",
+            interval=Interval.INTERVAL_1_MINUTE
+        )
+
+        analysis = handler.get_analysis()
+
+        rsi = analysis.indicators.get("RSI", 50)
+        macd = analysis.indicators.get("MACD.macd", 0)
+        price = analysis.indicators.get("close", 0)
+
+        # SIMPLE STRATEGY
+        if rsi < 30 and macd > 0:
+            signal = "BUY"
+        elif rsi > 70 and macd < 0:
+            signal = "SELL"
+        else:
+            signal = "WAIT"
+
+        return {
+            "rsi": rsi,
+            "macd": macd,
+            "price": price,
+            "signal": signal
+        }
+
+    except Exception as e:
+        print(f"Error analyzing {symbol}: {e}")
+        return {"signal": "WAIT", "rsi": 0, "macd": 0, "price": 0}
+
+
+# =====================
+# SIGNAL FORMAT (YOUR STYLE)
+# =====================
+def format_signal(name, direction, data):
+    global last_signal
+
     tz = pytz.timezone("Africa/Lagos")
-    return datetime.now(tz)
+    now = datetime.now(tz)
 
-# ==============================
-# SIGNAL LOGIC (BALANCED)
-# ==============================
-def get_signal(pair, screener):
-    handler = TA_Handler(
-        symbol=pair,
-        screener=screener,
-        exchange="BINANCE" if screener == "crypto" else "FX_IDC",
-        interval=Interval.INTERVAL_1_MINUTE
-    )
+    entry_time = now.strftime("%I:%M %p")
+    level1 = (now.replace(second=0, microsecond=0)).strftime("%I:%M %p")
+    level2 = (now.replace(second=0, microsecond=0)).strftime("%I:%M %p")
+    level3 = (now.replace(second=0, microsecond=0)).strftime("%I:%M %p")
 
-    analysis = handler.get_analysis()
-
-    rsi = analysis.indicators["RSI"]
-    macd = analysis.indicators["MACD.macd"]
-    ema50 = analysis.indicators["EMA50"]
-    price = analysis.indicators["close"]
-    recommendation = analysis.summary["RECOMMENDATION"]
-
-    # BUY
-    if (
-        rsi < 30 and
-        macd > 0 and
-        price > ema50 and
-        recommendation in ["BUY", "STRONG_BUY"]
-    ):
-        return "BUY", rsi, macd, ema50, price, recommendation
-
-    # SELL
-    elif (
-        rsi > 70 and
-        macd < 0 and
-        price < ema50 and
-        recommendation in ["SELL", "STRONG_SELL"]
-    ):
-        return "SELL", rsi, macd, ema50, price, recommendation
-
-    return None, rsi, macd, ema50, price, recommendation
-
-# ==============================
-# CONFIDENCE
-# ==============================
-def calculate_confidence(rsi, macd, price, ema50, recommendation):
-    score = 50
-
-    if recommendation in ["STRONG_BUY", "STRONG_SELL"]:
-        score += 20
-
-    if rsi < 30 or rsi > 70:
-        score += 10
-
-    if macd > 0:
-        score += 10
-
-    if price > ema50:
-        score += 10
-
-    return min(score, 95)
-
-# ==============================
-# COOLDOWN FILTER
-# ==============================
-def can_send(pair, direction):
-    now = time.time()
-
-    if pair not in last_signal_time:
-        last_signal_time[pair] = 0
-        last_signal_direction[pair] = None
-
-    if now - last_signal_time[pair] < COOLDOWN:
-        return False
-
-    if last_signal_direction[pair] == direction:
-        return False
-
-    last_signal_time[pair] = now
-    last_signal_direction[pair] = direction
-    return True
-
-# ==============================
-# MARTINGALE TIMES
-# ==============================
-def martingale_times():
-    now = get_time()
-
-    t1 = now + timedelta(minutes=2)
-    t2 = now + timedelta(minutes=4)
-    t3 = now + timedelta(minutes=6)
-
-    return (
-        t1.strftime("%I:%M %p"),
-        t2.strftime("%I:%M %p"),
-        t3.strftime("%I:%M %p"),
-    )
-
-# ==============================
-# TELEGRAM
-# ==============================
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={
-        "chat_id": CHAT_ID,
-        "text": message
-    })
-
-# ==============================
-# FORMAT MESSAGE
-# ==============================
-def format_signal(pair, direction, confidence):
-    now = get_time().strftime("%I:%M %p")
-    t1, t2, t3 = martingale_times()
-
-    emoji = "🟩" if direction == "BUY" else "🟥"
-
-    names = {
-        "EURUSD": "🇪🇺 EUR/USD 🇺🇸",
-        "GBPUSD": "🇬🇧 GBP/USD 🇺🇸",
-        "USDJPY": "🇺🇸 USD/JPY 🇯🇵",
-        "XAUUSD": "🥇 GOLD (XAU/USD)",
-        "BTCUSDT": "₿ BTC/USDT",
-        "ETHUSDT": "♦ ETH/USDT"
-    }
-
-    pair_name = names.get(pair, pair)
-
-    return f"""🤖 AlphaSignalsBot
+    msg = f"""
+🤖 AlphaSignalsBot
 🚨 SIGNAL ALERT  
 
-📉 {pair_name}
+📉 {name}
 ⏰ Expiry: 2 minutes
-📍 Entry Time: {now}
+📍 Entry Time: {entry_time}
 
-📈 Direction: {direction} {emoji}
-💯 Confidence: {confidence}%
+📈 Direction: {direction} 🟥
+💯 Confidence: 70%
 
 🎯 Martingale Levels:
-🔁 Level 1 → {t1}
-🔁 Level 2 → {t2}
-🔁 Level 3 → {t3}
+🔁 Level 1 → {level1}
+🔁 Level 2 → {level2}
+🔁 Level 3 → {level3}
 """
 
-# ==============================
-# MAIN BOT LOOP
-# ==============================
-def run_bot():
-    print("🚀 FULL AUTO BOT RUNNING")
+    last_signal = msg
+    print(msg)
+    return msg
 
+
+# =====================
+# BOT LOOP (FULL AUTO)
+# =====================
+def bot_loop():
     while True:
-        for pair, screener in pairs:
-            try:
-                signal, rsi, macd, ema50, price, recommendation = get_signal(pair, screener)
+        print("\n🔄 Scanning markets...")
 
-                print(f"{pair} | RSI:{rsi:.2f} | MACD:{macd:.5f} | REC:{recommendation}")
+        for symbol, name in ASSETS:
+            data = analyze(symbol)
 
-                if signal:
-                    confidence = calculate_confidence(rsi, macd, price, ema50, recommendation)
+            print(f"Checking {name} | RSI: {data['rsi']} | MACD: {data['macd']}")
 
-                    if confidence >= 60 and can_send(pair, signal):
-                        msg = format_signal(pair, signal, confidence)
-                        send_telegram(msg)
-                        print(f"✅ SENT: {pair} {signal}")
+            if data["signal"] != "WAIT":
+                format_signal(name, data["signal"], data)
 
-            except Exception as e:
-                print("❌ Error:", e)
+        time.sleep(60)  # scan every 1 minute
 
-        time.sleep(60)
 
-# ==============================
-# FLASK ROUTE
-# ==============================
+# =====================
+# FLASK ROUTES
+# =====================
 @app.route("/")
 def home():
     return {"status": "AlphaSignalsBot Running 🤖"}
 
-# ==============================
-# START THREAD
-# ==============================
-threading.Thread(target=run_bot).start()
+@app.route("/signal")
+def signal():
+    return {"last_signal": last_signal}
+
+@app.route("/health")
+def health():
+    return {"bot": "active", "assets": len(ASSETS)}
+
+
+# =====================
+# START BOT THREAD
+# =====================
+Thread(target=bot_loop, daemon=True).start()
+
+
+# =====================
+# RUN SERVER
+# =====================
+if __name__ == "__main__":
+    print("🚀 FULL AUTO BOT STARTED")
+    app.run(host="0.0.0.0", port=10000)
