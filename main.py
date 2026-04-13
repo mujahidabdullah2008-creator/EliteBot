@@ -5,17 +5,18 @@ from datetime import datetime, timedelta
 import pytz
 from flask import Flask
 from tradingview_ta import TA_Handler, Interval
+import threading
 
 app = Flask(__name__)
 
 # ==============================
-# ENV VARIABLES (IMPORTANT)
+# ENV VARIABLES
 # ==============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 # ==============================
-# SETTINGS
+# PAIRS (FOREX + CRYPTO + GOLD)
 # ==============================
 pairs = [
     ("EURUSD", "forex"),
@@ -26,6 +27,9 @@ pairs = [
     ("ETHUSDT", "crypto"),
 ]
 
+# ==============================
+# SETTINGS
+# ==============================
 COOLDOWN = 300  # 5 mins
 
 last_signal_time = {}
@@ -39,24 +43,7 @@ def get_time():
     return datetime.now(tz)
 
 # ==============================
-# CONFIDENCE
-# ==============================
-def calculate_confidence(rsi, macd, price, ema50):
-    score = 0
-
-    if rsi < 30 or rsi > 70:
-        score += 30
-
-    if macd > 0:
-        score += 20
-
-    if price > ema50:
-        score += 20
-
-    return min(score, 95)
-
-# ==============================
-# SIGNAL LOGIC (STRONG ONLY)
+# SIGNAL LOGIC (BALANCED)
 # ==============================
 def get_signal(pair, screener):
     handler = TA_Handler(
@@ -72,19 +59,50 @@ def get_signal(pair, screener):
     macd = analysis.indicators["MACD.macd"]
     ema50 = analysis.indicators["EMA50"]
     price = analysis.indicators["close"]
+    recommendation = analysis.summary["RECOMMENDATION"]
 
-    # STRONG BUY
-    if rsi < 25 and macd > 0 and price > ema50:
-        return "BUY", rsi, macd, ema50, price
+    # BUY
+    if (
+        rsi < 30 and
+        macd > 0 and
+        price > ema50 and
+        recommendation in ["BUY", "STRONG_BUY"]
+    ):
+        return "BUY", rsi, macd, ema50, price, recommendation
 
-    # STRONG SELL
-    elif rsi > 75 and macd < 0 and price < ema50:
-        return "SELL", rsi, macd, ema50, price
+    # SELL
+    elif (
+        rsi > 70 and
+        macd < 0 and
+        price < ema50 and
+        recommendation in ["SELL", "STRONG_SELL"]
+    ):
+        return "SELL", rsi, macd, ema50, price, recommendation
 
-    return None, rsi, macd, ema50, price
+    return None, rsi, macd, ema50, price, recommendation
 
 # ==============================
-# COOLDOWN + FILTER
+# CONFIDENCE
+# ==============================
+def calculate_confidence(rsi, macd, price, ema50, recommendation):
+    score = 50
+
+    if recommendation in ["STRONG_BUY", "STRONG_SELL"]:
+        score += 20
+
+    if rsi < 30 or rsi > 70:
+        score += 10
+
+    if macd > 0:
+        score += 10
+
+    if price > ema50:
+        score += 10
+
+    return min(score, 95)
+
+# ==============================
+# COOLDOWN FILTER
 # ==============================
 def can_send(pair, direction):
     now = time.time()
@@ -104,7 +122,7 @@ def can_send(pair, direction):
     return True
 
 # ==============================
-# MARTINGALE TIME
+# MARTINGALE TIMES
 # ==============================
 def martingale_times():
     now = get_time()
@@ -120,7 +138,7 @@ def martingale_times():
     )
 
 # ==============================
-# SEND TELEGRAM
+# TELEGRAM
 # ==============================
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -137,12 +155,22 @@ def format_signal(pair, direction, confidence):
     t1, t2, t3 = martingale_times()
 
     emoji = "🟩" if direction == "BUY" else "🟥"
-    flag = "🇪🇺 EUR/USD 🇺🇸" if pair == "EURUSD" else pair
+
+    names = {
+        "EURUSD": "🇪🇺 EUR/USD 🇺🇸",
+        "GBPUSD": "🇬🇧 GBP/USD 🇺🇸",
+        "USDJPY": "🇺🇸 USD/JPY 🇯🇵",
+        "XAUUSD": "🥇 GOLD (XAU/USD)",
+        "BTCUSDT": "₿ BTC/USDT",
+        "ETHUSDT": "♦ ETH/USDT"
+    }
+
+    pair_name = names.get(pair, pair)
 
     return f"""🤖 AlphaSignalsBot
 🚨 SIGNAL ALERT  
 
-📉 {flag} (OTC)
+📉 {pair_name}
 ⏰ Expiry: 2 minutes
 📍 Entry Time: {now}
 
@@ -156,7 +184,7 @@ def format_signal(pair, direction, confidence):
 """
 
 # ==============================
-# MAIN LOOP (AUTO BOT)
+# MAIN BOT LOOP
 # ==============================
 def run_bot():
     print("🚀 FULL AUTO BOT RUNNING")
@@ -164,31 +192,31 @@ def run_bot():
     while True:
         for pair, screener in pairs:
             try:
-                signal, rsi, macd, ema50, price = get_signal(pair, screener)
+                signal, rsi, macd, ema50, price, recommendation = get_signal(pair, screener)
+
+                print(f"{pair} | RSI:{rsi:.2f} | MACD:{macd:.5f} | REC:{recommendation}")
 
                 if signal:
-                    confidence = calculate_confidence(rsi, macd, price, ema50)
+                    confidence = calculate_confidence(rsi, macd, price, ema50, recommendation)
 
                     if confidence >= 60 and can_send(pair, signal):
                         msg = format_signal(pair, signal, confidence)
                         send_telegram(msg)
-                        print(f"✅ Sent: {pair} {signal}")
+                        print(f"✅ SENT: {pair} {signal}")
 
             except Exception as e:
-                print("Error:", e)
+                print("❌ Error:", e)
 
         time.sleep(60)
 
 # ==============================
-# FLASK (KEEP ALIVE)
+# FLASK ROUTE
 # ==============================
 @app.route("/")
 def home():
     return {"status": "AlphaSignalsBot Running 🤖"}
 
 # ==============================
-# START BOT
+# START THREAD
 # ==============================
-import threading
-
 threading.Thread(target=run_bot).start()
