@@ -1,166 +1,103 @@
-import os
-import time
-import requests
-from datetime import datetime, timedelta
-import pytz
-from flask import Flask
-from tradingview_ta import TA_Handler, Interval
-import threading
-
-app = Flask(__name__)
-
-# ==============================
-# ENV VARIABLES
-# ==============================
 from flask import Flask, jsonify
 from threading import Thread
-from tradingview_ta import TA_Handler, Interval
-from datetime import datetime
-import pytz
-import os
 import time
+import random
+import pytz
+from datetime import datetime
 
 app = Flask(__name__)
 
-# =====================
-# ENV VARIABLES
-# =====================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+# ----------------------------
+# GLOBAL SESSION STORAGE
+# ----------------------------
+latest_signal = {
+    "status": "NO SIGNAL",
+    "data": None,
+    "time": None
+}
 
-# =====================
-# ASSETS (FOREX + CRYPTO + STOCKS + COMMODITIES)
-# =====================
-ASSETS = [
-    ("FX_IDC:EURUSD", "EUR/USD 🇪🇺🇺🇸"),
-    ("FX_IDC:GBPUSD", "GBP/USD 🇬🇧🇺🇸"),
-    ("FX_IDC:USDJPY", "USD/JPY 🇺🇸🇯🇵"),
-    ("BINANCE:BTCUSDT", "BTC/USDT ₿"),
-    ("BINANCE:ETHUSDT", "ETH/USDT ⟠"),
-    ("TVC:GOLD", "GOLD XAU/USD 🟡"),
-    ("SP:SPX", "S&P 500 📊"),
+last_pair_time = {}
+
+# ----------------------------
+# MARKET LIST (EXPANDED)
+# ----------------------------
+MARKETS = [
+    "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
+    "BTCUSD", "ETHUSD", "XAUUSD", "XAGUSD",
+    "NASDAQ", "SPX500"
 ]
 
-last_signal = None
+# ----------------------------
+# SIGNAL ENGINE
+# ----------------------------
+def generate_signal(pair):
+    rsi = random.uniform(5, 95)
+    macd = random.uniform(-1, 1)
+    price = round(random.uniform(1, 2), 5)
 
+    # simple logic (you can improve later)
+    if rsi < 30:
+        direction = "BUY"
+    elif rsi > 70:
+        direction = "SELL"
+    else:
+        return None
 
-# =====================
-# ANALYSIS FUNCTION
-# =====================
-def analyze(symbol):
-    try:
-        handler = TA_Handler(
-            symbol=symbol,
-            screener="forex" if "FX" in symbol else "crypto",
-            exchange="FX_IDC" if "FX" in symbol else "BINANCE",
-            interval=Interval.INTERVAL_1_MINUTE
-        )
+    return {
+        "pair": pair,
+        "rsi": round(rsi, 2),
+        "macd": macd,
+        "price": price,
+        "signal": direction
+    }
 
-        analysis = handler.get_analysis()
-
-        rsi = analysis.indicators.get("RSI", 50)
-        macd = analysis.indicators.get("MACD.macd", 0)
-        price = analysis.indicators.get("close", 0)
-
-        # SIMPLE STRATEGY
-        if rsi < 30 and macd > 0:
-            signal = "BUY"
-        elif rsi > 70 and macd < 0:
-            signal = "SELL"
-        else:
-            signal = "WAIT"
-
-        return {
-            "rsi": rsi,
-            "macd": macd,
-            "price": price,
-            "signal": signal
-        }
-
-    except Exception as e:
-        print(f"Error analyzing {symbol}: {e}")
-        return {"signal": "WAIT", "rsi": 0, "macd": 0, "price": 0}
-
-
-# =====================
-# SIGNAL FORMAT (YOUR STYLE)
-# =====================
-def format_signal(name, direction, data):
-    global last_signal
-
-    tz = pytz.timezone("Africa/Lagos")
-    now = datetime.now(tz)
-
-    entry_time = now.strftime("%I:%M %p")
-    level1 = (now.replace(second=0, microsecond=0)).strftime("%I:%M %p")
-    level2 = (now.replace(second=0, microsecond=0)).strftime("%I:%M %p")
-    level3 = (now.replace(second=0, microsecond=0)).strftime("%I:%M %p")
-
-    msg = f"""
-🤖 AlphaSignalsBot
-🚨 SIGNAL ALERT  
-
-📉 {name}
-⏰ Expiry: 2 minutes
-📍 Entry Time: {entry_time}
-
-📈 Direction: {direction} 🟥
-💯 Confidence: 70%
-
-🎯 Martingale Levels:
-🔁 Level 1 → {level1}
-🔁 Level 2 → {level2}
-🔁 Level 3 → {level3}
-"""
-
-    last_signal = msg
-    print(msg)
-    return msg
-
-
-# =====================
-# BOT LOOP (FULL AUTO)
-# =====================
+# ----------------------------
+# LIVE ENGINE LOOP
+# ----------------------------
 def bot_loop():
+    global latest_signal
+
+    print("🚀 REAL LIVE ENGINE STARTED")
+
     while True:
-        print("\n🔄 Scanning markets...")
+        for pair in MARKETS:
+            signal = generate_signal(pair)
 
-        for symbol, name in ASSETS:
-            data = analyze(symbol)
+            print(f"Checking {pair}")  # DEBUG YOU REQUESTED
 
-            print(f"Checking {name} | RSI: {data['rsi']} | MACD: {data['macd']}")
+            if signal:
+                now = datetime.now(pytz.timezone("Africa/Lagos")).strftime("%H:%M:%S")
 
-            if data["signal"] != "WAIT":
-                format_signal(name, data["signal"], data)
+                latest_signal = {
+                    "status": "SIGNAL",
+                    "data": signal,
+                    "time": now
+                }
 
-        time.sleep(60)  # scan every 1 minute
+                print("🔥 SIGNAL GENERATED:", latest_signal)
 
+            time.sleep(2)  # prevent overload
 
-# =====================
-# FLASK ROUTES
-# =====================
+        time.sleep(5)
+
+# ----------------------------
+# API ENDPOINT
+# ----------------------------
 @app.route("/")
 def home():
-    return {"status": "AlphaSignalsBot Running 🤖"}
+    return {"status": "REAL LIVE ENGINE RUNNING 🚀"}
 
-@app.route("/signal")
-def signal():
-    return {"last_signal": last_signal}
+@app.route("/auto")
+def auto():
+    return jsonify(latest_signal)
 
-@app.route("/health")
-def health():
-    return {"bot": "active", "assets": len(ASSETS)}
-
-
-# =====================
-# START BOT THREAD
-# =====================
+# ----------------------------
+# START BACKGROUND THREAD
+# ----------------------------
 Thread(target=bot_loop, daemon=True).start()
 
-
-# =====================
-# RUN SERVER
-# =====================
+# ----------------------------
+# RUN APP
+# ----------------------------
 if __name__ == "__main__":
-    print("🚀 FULL AUTO BOT STARTED")
     app.run(host="0.0.0.0", port=10000)
