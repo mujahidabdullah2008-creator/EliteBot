@@ -1,14 +1,19 @@
 from flask import Flask, jsonify
 from tradingview_ta import TA_Handler, Interval
-import os
 import requests
-from datetime import datetime
+import os
+import threading
+import time
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-# 🔑 ENV VARIABLES (FIXED)
+# 🔑 ENV VARIABLES
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+
+# 🧠 PREVENT SPAM
+last_signal_time = None
 
 
 # 📊 GET MARKET DATA
@@ -17,12 +22,12 @@ def get_analysis():
         symbol="EURUSD",
         screener="forex",
         exchange="FX_IDC",
-        interval=Interval.INTERVAL_1_MINUTE  # ✅ FIXED (correct enum)
+        interval=Interval.INTERVAL_1_MINUTE
     )
     return handler.get_analysis()
 
 
-# 🤖 SIGNAL LOGIC (SIMPLE & CLEAN)
+# 🤖 SMART SIGNAL LOGIC (IMPROVED)
 def generate_signal():
     analysis = get_analysis()
     ind = analysis.indicators
@@ -33,19 +38,27 @@ def generate_signal():
     macd = ind.get("MACD.macd")
 
     signal = "WAIT"
+    confidence = 0
 
+    # 🔥 MORE REALISTIC CONDITIONS (NOT TOO STRICT)
     if rsi and ema50 and macd:
-        if rsi < 30 and price < ema50 and macd < 0:
+        # BUY condition
+        if rsi < 40 and price < ema50 and macd < 0:
             signal = "BUY"
-        elif rsi > 70 and price > ema50 and macd > 0:
+            confidence = 65
+
+        # SELL condition
+        elif rsi > 60 and price > ema50 and macd > 0:
             signal = "SELL"
+            confidence = 65
 
     return {
         "price": price,
         "rsi": rsi,
         "ema50": ema50,
         "macd": macd,
-        "signal": signal
+        "signal": signal,
+        "confidence": confidence
     }
 
 
@@ -58,65 +71,82 @@ def format_message(data):
     return f"""🤖 AlphaSignalsBot
 🚨 SIGNAL ALERT  
 
-📉 🇪🇺 EUR/USD 🇺🇸
-⏰ Entry Time: {now.strftime('%I:%M %p')}
+📉 🇪🇺 EUR/USD 🇺🇸 (OTC)
+⏰ Expiry: 2 minutes
+📍 Entry Time: {now.strftime('%I:%M %p')}
 
 📈 Direction: {direction}
-💯 Confidence: 70%
+💯 Confidence: {data['confidence']}%
 
-📊 Price: {data['price']}
-📉 RSI: {data['rsi']}
-📈 EMA50: {data['ema50']}
-📊 MACD: {data['macd']}
+🎯 Martingale Levels:
+🔁 Level 1 → {(now + timedelta(minutes=2)).strftime('%I:%M %p')}
+🔁 Level 2 → {(now + timedelta(minutes=4)).strftime('%I:%M %p')}
+🔁 Level 3 → {(now + timedelta(minutes=6)).strftime('%I:%M %p')}
 """
 
 
-# 📤 SEND TO TELEGRAM (FIXED)
-def send_telegram(text):
+# 📤 SEND TELEGRAM
+def send_telegram(msg):
     if not BOT_TOKEN or not CHAT_ID:
-        return {"error": "Missing BOT_TOKEN or CHAT_ID"}
+        print("❌ Missing BOT_TOKEN or CHAT_ID")
+        return
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text
-    }
+    payload = {"chat_id": CHAT_ID, "text": msg}
 
-    return requests.post(url, data=payload).json()
+    try:
+        requests.post(url, data=payload)
+        print("✅ Sent to Telegram")
+    except Exception as e:
+        print("❌ Telegram Error:", e)
 
 
-# 🌐 HOME ROUTE
+# 🔁 AUTO LOOP (CORE ENGINE)
+def auto_loop():
+    global last_signal_time
+
+    while True:
+        try:
+            data = generate_signal()
+
+            print("📊 Checking market:", data)
+
+            # 🚫 Skip if no signal
+            if data["signal"] == "WAIT":
+                print("⏳ No signal")
+            
+            else:
+                now = datetime.now()
+
+                # 🚫 Avoid spamming (1 signal per 2 mins)
+                if last_signal_time and (now - last_signal_time).seconds < 120:
+                    print("🚫 Skipped (cooldown)")
+                else:
+                    msg = format_message(data)
+                    send_telegram(msg)
+                    last_signal_time = now
+
+        except Exception as e:
+            print("❌ Error:", e)
+
+        time.sleep(60)  # ⏱ runs every 1 minute
+
+
+# 🌐 ROUTES (FOR TESTING ONLY)
 @app.route("/")
 def home():
-    return jsonify({"status": "AlphaSignalsBot Running 🤖"})
+    return jsonify({"status": "AlphaSignalsBot FULL AUTO 🤖"})
 
 
-# 📊 SIGNAL CHECK
 @app.route("/signal")
 def signal():
     return jsonify(generate_signal())
 
 
-# 🚀 AUTO SEND SIGNAL
-@app.route("/auto")
-def auto():
-    data = generate_signal()
-
-    if data["signal"] == "WAIT":
-        return jsonify({
-            "status": "NO SIGNAL",
-            "data": data
-        })
-
-    message = format_message(data)
-    result = send_telegram(message)
-
-    return jsonify({
-        "sent_signal": data,
-        "telegram_response": result
-    })
+# 🚀 START BACKGROUND LOOP
+threading.Thread(target=auto_loop).start()
 
 
-# 🔥 RUN
+# 🔥 RUN SERVER
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
