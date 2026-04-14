@@ -1,44 +1,50 @@
-from flask import Flask, jsonify
+from flask import Flask
 from threading import Thread
 import time
 import pytz
 from datetime import datetime, timedelta
 import requests
+import os
 from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
 
 # ----------------------------
-# TELEGRAM CONFIG
+# TELEGRAM CONFIG (SAFE)
 # ----------------------------
-BOT_TOKEN = "8766011392:AAGhf8-nVXDjnR_BwT0Gba4RLtJAcc46np8"
-CHAT_ID = "7068848522"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 def send_telegram(message):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("❌ TELEGRAM NOT CONFIGURED")
+        return
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {"chat_id": CHAT_ID, "text": message}
+
     try:
         requests.post(url, data=data)
     except:
-        print("Telegram error")
+        print("❌ Telegram error")
 
 # ----------------------------
-# GLOBAL STORAGE
-# ----------------------------
-latest_signal = {"status": "NO SIGNAL"}
-last_signal_time = {}
-
-# ----------------------------
-# MARKETS
+# MARKETS (MULTI ASSETS)
 # ----------------------------
 MARKETS = [
     ("EURUSD", "forex"),
     ("GBPUSD", "forex"),
     ("USDJPY", "forex"),
+    ("AUDUSD", "forex"),
+    ("XAUUSD", "forex"),   # GOLD
     ("BTCUSDT", "crypto"),
     ("ETHUSDT", "crypto"),
-    ("XAUUSD", "forex"),
 ]
+
+# ----------------------------
+# STORAGE
+# ----------------------------
+last_signal_time = {}
 
 # ----------------------------
 # GET DATA
@@ -56,7 +62,7 @@ def get_analysis(symbol, screener):
         return None
 
 # ----------------------------
-# FORMAT SIGNAL MESSAGE
+# FORMAT SIGNAL
 # ----------------------------
 def format_signal(symbol, direction):
     lagos = pytz.timezone("Africa/Lagos")
@@ -69,28 +75,27 @@ def format_signal(symbol, direction):
     mg2 = (now + timedelta(minutes=4)).strftime("%I:%M %p")
     mg3 = (now + timedelta(minutes=6)).strftime("%I:%M %p")
 
-    pair_name = symbol.replace("USD", "/USD")
+    pair = symbol.replace("USDT", "/USDT").replace("USD", "/USD")
 
-    msg = f"""
+    return f"""
 🤖 AlphaSignalsBot
 🚨 SIGNAL ALERT  
 
-📉 {pair_name}
+📊 {pair}
 ⏰ Expiry: 2 minutes
 📍 Entry Time: {entry}
 
 📈 Direction: {direction} {'🟩' if direction=='BUY' else '🟥'}
-💯 Confidence: 80%
+💯 Confidence: 75%
 
 🎯 Martingale Levels:
 🔁 Level 1 → {mg1}
 🔁 Level 2 → {mg2}
 🔁 Level 3 → {mg3}
 """
-    return msg
 
 # ----------------------------
-# SIGNAL LOGIC
+# SIGNAL LOGIC (BALANCED)
 # ----------------------------
 def generate_signal(symbol, screener):
     analysis = get_analysis(symbol, screener)
@@ -98,58 +103,66 @@ def generate_signal(symbol, screener):
         return None
 
     rsi = analysis.indicators.get("RSI")
+    macd = analysis.indicators.get("MACD.macd")
     rec = analysis.summary.get("RECOMMENDATION")
 
-    print(f"Checking {symbol} | RSI: {rsi} | REC: {rec}")
+    print(f"Checking {symbol} | RSI: {rsi} | MACD: {macd} | REC: {rec}")
 
-    if rec == "STRONG_BUY" and rsi < 35:
+    if rsi is None or macd is None:
+        return None
+
+    # ✅ Balanced conditions (more signals, still smart)
+    if rec in ["BUY", "STRONG_BUY"] and rsi < 45 and macd > -0.001:
         direction = "BUY"
-    elif rec == "STRONG_SELL" and rsi > 65:
+
+    elif rec in ["SELL", "STRONG_SELL"] and rsi > 55 and macd < 0.001:
         direction = "SELL"
+
     else:
         return None
 
-    # cooldown (5 min)
+    # ⛔ Cooldown (avoid spam)
     now_ts = time.time()
     if symbol in last_signal_time:
-        if now_ts - last_signal_time[symbol] < 300:
+        if now_ts - last_signal_time[symbol] < 180:  # 3 minutes
             return None
 
     last_signal_time[symbol] = now_ts
-
     return direction
 
 # ----------------------------
-# MAIN ENGINE
+# BOT ENGINE
 # ----------------------------
 def bot_loop():
-    print("🚀 TELEGRAM SIGNAL BOT STARTED")
+    print("🚀 LIVE SIGNAL ENGINE RUNNING")
 
     while True:
+        print("🔄 Scanning markets...")
+
         for symbol, screener in MARKETS:
             direction = generate_signal(symbol, screener)
 
             if direction:
-                message = format_signal(symbol, direction)
+                msg = format_signal(symbol, direction)
 
-                print("🔥 SENDING SIGNAL")
-                print(message)
+                print("🔥 SIGNAL FOUND")
+                print(msg)
 
-                send_telegram(message)
+                send_telegram(msg)
 
-            time.sleep(3)
+            time.sleep(2)
 
         time.sleep(5)
 
 # ----------------------------
-# API
+# ROUTE
 # ----------------------------
 @app.route("/")
 def home():
-    return {"status": "TELEGRAM BOT RUNNING 🚀"}
+    return {"status": "LIVE BOT RUNNING 🚀"}
 
 # ----------------------------
-# START ENGINE
+# START
 # ----------------------------
 Thread(target=bot_loop, daemon=True).start()
 
