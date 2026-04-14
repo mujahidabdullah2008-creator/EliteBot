@@ -1,22 +1,18 @@
-from flask import Flask
-import threading
 import time
 import requests
 import os
 from tradingview_ta import TA_Handler, Interval
 
-app = Flask(__name__)
-
 # =========================
-# SECURE CONFIG (NO HARDCODE)
+# CONFIG (SECURE)
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 if not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("❌ BOT_TOKEN or CHAT_ID not set")
+    raise Exception("❌ BOT_TOKEN or CHAT_ID missing")
 
-print("✅ Telegram config loaded")
+print("✅ Config loaded successfully")
 
 # =========================
 # TELEGRAM FUNCTION
@@ -25,7 +21,7 @@ def send_signal(message):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": CHAT_ID, "text": message})
-        print("📤 Signal sent to Telegram")
+        print("📤 Signal sent")
     except Exception as e:
         print("❌ Telegram Error:", e)
 
@@ -36,11 +32,11 @@ PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURJPY"]
 INTERVAL = Interval.INTERVAL_1_MINUTE
 
 # =========================
-# ANALYSIS ENGINE
+# ANALYSIS
 # =========================
 def analyze_pair(pair):
     try:
-        print(f"🔍 Analyzing {pair}...")
+        print(f"🔍 Checking {pair}")
 
         handler = TA_Handler(
             symbol=pair,
@@ -63,7 +59,7 @@ def analyze_pair(pair):
         score_call = 0
         score_put = 0
 
-        # CALL LOGIC
+        # CALL CONDITIONS
         if rsi < 35:
             score_call += 2
         if macd > signal:
@@ -71,7 +67,7 @@ def analyze_pair(pair):
         if close > ema50:
             score_call += 1
 
-        # PUT LOGIC
+        # PUT CONDITIONS
         if rsi > 65:
             score_put += 2
         if macd < signal:
@@ -88,17 +84,17 @@ def analyze_pair(pair):
         return None, rsi
 
     except Exception as e:
-        print(f"❌ Error analyzing {pair}:", e)
+        print(f"❌ Error on {pair}: {e}")
         return None, None
 
 # =========================
-# MAIN ENGINE LOOP
+# MAIN ENGINE
 # =========================
-def run_engine():
-    print("🚀 ELITE AI SIGNAL ENGINE STARTED")
+def run_bot():
+    print("🚀 ELITE AI ENGINE STARTED")
 
     while True:
-        print("🔄 NEW SCAN STARTED")
+        print("🔄 SCANNING MARKET...\n")
 
         for pair in PAIRS:
             signal, rsi = analyze_pair(pair)
@@ -114,23 +110,17 @@ RSI: {round(rsi,2)}
 Timeframe: 1 MIN
 Entry: Immediate
 
-⚡ Strategy: Multi-Indicator AI
+⚡ Strategy: AI Multi-Indicator
 💰 Martingale: x2 optional
 """
-                print(f"✅ SIGNAL: {pair} {signal}")
+                print(f"✅ SIGNAL FOUND: {pair} {signal}")
                 send_signal(message)
 
         print("⏳ Waiting 60 seconds...\n")
         time.sleep(60)
 
 # =========================
-# START ENGINE THREAD
+# START BOT (IMPORTANT)
 # =========================
-threading.Thread(target=run_engine, daemon=True).start()
-
-# =========================
-# KEEP RENDER ALIVE
-# =========================
-@app.route('/')
-def home():
-    return "BOT IS LIVE"
+if __name__ == "__main__":
+    run_bot()
