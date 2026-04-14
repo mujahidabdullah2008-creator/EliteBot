@@ -8,33 +8,31 @@ from tradingview_ta import TA_Handler, Interval
 app = Flask(__name__)
 
 # ==============================
-# SECURE TELEGRAM CONFIG
+# TELEGRAM CONFIG
 # ==============================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 # ==============================
-# PAIRS LIST
+# PAIRS
 # ==============================
-pairs = [
-    "EURUSD", "GBPUSD", "USDJPY",
-    "AUDUSD", "USDCAD", "EURJPY"
-]
+pairs = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURJPY"]
 
 # ==============================
-# MEMORY (ANTI-SPAM)
+# ANTI-SPAM MEMORY
 # ==============================
 last_signal = {}
 
 # ==============================
-# TELEGRAM SEND FUNCTION
+# TELEGRAM FUNCTION
 # ==============================
 def send_signal(message):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+        print("📩 Sent to Telegram", flush=True)
     except Exception as e:
-        print("Telegram Error:", e)
+        print("Telegram Error:", e, flush=True)
 
 # ==============================
 # ANALYSIS FUNCTION
@@ -55,12 +53,9 @@ def analyze_pair(pair):
         macd_signal = analysis.indicators["MACD.signal"]
         trend = analysis.summary["RECOMMENDATION"]
 
-        # DEBUG (VERY IMPORTANT)
-        print(f"Checking {pair} | RSI: {rsi} | MACD: {macd} | Trend: {trend}")
+        print(f"Checking {pair} | RSI: {rsi} | MACD: {macd} | Trend: {trend}", flush=True)
 
-        # ==============================
-        # SMART CONDITIONS (BALANCED)
-        # ==============================
+        # SIGNAL CONDITIONS (BALANCED)
         if rsi < 35 and macd > macd_signal and trend == "BUY":
             return "BUY"
 
@@ -68,45 +63,41 @@ def analyze_pair(pair):
             return "SELL"
 
     except Exception as e:
-        print(f"Error analyzing {pair}: {e}")
+        print(f"ERROR {pair}: {e}", flush=True)
 
     return None
 
 # ==============================
-# MAIN BOT LOOP
+# LIVE ENGINE LOOP
 # ==============================
 def run_bot():
-    print("🚀 ELITE LIVE SIGNAL ENGINE STARTED")
+    print("🚀 ELITE LIVE ENGINE STARTED", flush=True)
 
     while True:
-        print("🔄 Scanning markets...")
+        try:
+            print("🔄 Scanning markets...", flush=True)
 
-        for pair in pairs:
-            signal = analyze_pair(pair)
+            for pair in pairs:
+                print(f"➡️ Scanning {pair}", flush=True)
 
-            if signal:
-                current_time = time.time()
+                signal = analyze_pair(pair)
 
-                # ==============================
-                # ANTI-SPAM (1 signal per pair / 5 mins)
-                # ==============================
-                if pair in last_signal:
-                    if current_time - last_signal[pair] < 300:
+                if signal:
+                    now = time.time()
+
+                    if pair in last_signal and now - last_signal[pair] < 300:
                         continue
 
-                last_signal[pair] = current_time
+                    last_signal[pair] = now
 
-                # ==============================
-                # TELEGRAM MESSAGE FORMAT
-                # ==============================
-                message = f"""
+                    message = f"""
 🔥 ELITE SIGNAL 🔥
 
 Pair: {pair}
 Signal: {signal}
 Timeframe: M1
 
-Martingale Plan:
+Martingale:
 1️⃣ Entry
 2️⃣ Entry (if loss)
 3️⃣ Entry (if loss)
@@ -114,23 +105,30 @@ Martingale Plan:
 ⚠️ Trade wisely
 """
 
-                print(f"✅ SIGNAL: {pair} {signal}")
-                send_signal(message)
+                    print(f"✅ SIGNAL FOUND: {pair} {signal}", flush=True)
+                    send_signal(message)
 
-                # slight delay to avoid flooding
-                time.sleep(5)
+                    time.sleep(5)
 
-        # scan every 30 seconds
-        time.sleep(30)
+            time.sleep(30)
 
-# ==============================
-# THREAD START
-# ==============================
-threading.Thread(target=run_bot).start()
+        except Exception as e:
+            print("🔥 LOOP CRASH:", e, flush=True)
+            time.sleep(5)
 
 # ==============================
-# RENDER KEEP-ALIVE ROUTE
+# START ENGINE SAFELY
+# ==============================
+def start_engine():
+    thread = threading.Thread(target=run_bot)
+    thread.daemon = True
+    thread.start()
+
+start_engine()
+
+# ==============================
+# KEEP ALIVE ROUTE
 # ==============================
 @app.route("/")
 def home():
-    return "🔥 BOT IS LIVE & SCANNING"
+    return "🔥 BOT RUNNING LIVE"
