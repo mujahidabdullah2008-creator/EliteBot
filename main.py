@@ -1,103 +1,160 @@
 from flask import Flask, jsonify
 from threading import Thread
 import time
-import random
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
+import requests
+from tradingview_ta import TA_Handler, Interval
 
 app = Flask(__name__)
 
 # ----------------------------
-# GLOBAL SESSION STORAGE
+# TELEGRAM CONFIG
 # ----------------------------
-latest_signal = {
-    "status": "NO SIGNAL",
-    "data": None,
-    "time": None
-}
+BOT_TOKEN = "8766011392:AAGhf8-nVXDjnR_BwT0Gba4RLtJAcc46np8"
+CHAT_ID = "7068848522"
 
-last_pair_time = {}
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": message}
+    try:
+        requests.post(url, data=data)
+    except:
+        print("Telegram error")
 
 # ----------------------------
-# MARKET LIST (EXPANDED)
+# GLOBAL STORAGE
+# ----------------------------
+latest_signal = {"status": "NO SIGNAL"}
+last_signal_time = {}
+
+# ----------------------------
+# MARKETS
 # ----------------------------
 MARKETS = [
-    "EURUSD", "GBPUSD", "USDJPY", "AUDUSD",
-    "BTCUSD", "ETHUSD", "XAUUSD", "XAGUSD",
-    "NASDAQ", "SPX500"
+    ("EURUSD", "forex"),
+    ("GBPUSD", "forex"),
+    ("USDJPY", "forex"),
+    ("BTCUSDT", "crypto"),
+    ("ETHUSDT", "crypto"),
+    ("XAUUSD", "forex"),
 ]
 
 # ----------------------------
-# SIGNAL ENGINE
+# GET DATA
 # ----------------------------
-def generate_signal(pair):
-    rsi = random.uniform(5, 95)
-    macd = random.uniform(-1, 1)
-    price = round(random.uniform(1, 2), 5)
+def get_analysis(symbol, screener):
+    try:
+        handler = TA_Handler(
+            symbol=symbol,
+            screener=screener,
+            exchange="FX_IDC" if screener == "forex" else "BINANCE",
+            interval=Interval.INTERVAL_1_MINUTE
+        )
+        return handler.get_analysis()
+    except:
+        return None
 
-    # simple logic (you can improve later)
-    if rsi < 30:
+# ----------------------------
+# FORMAT SIGNAL MESSAGE
+# ----------------------------
+def format_signal(symbol, direction):
+    lagos = pytz.timezone("Africa/Lagos")
+    now = datetime.now(lagos)
+
+    entry = now.strftime("%I:%M %p")
+    expiry = (now + timedelta(minutes=2)).strftime("%I:%M %p")
+
+    mg1 = (now + timedelta(minutes=2)).strftime("%I:%M %p")
+    mg2 = (now + timedelta(minutes=4)).strftime("%I:%M %p")
+    mg3 = (now + timedelta(minutes=6)).strftime("%I:%M %p")
+
+    pair_name = symbol.replace("USD", "/USD")
+
+    msg = f"""
+🤖 AlphaSignalsBot
+🚨 SIGNAL ALERT  
+
+📉 {pair_name}
+⏰ Expiry: 2 minutes
+📍 Entry Time: {entry}
+
+📈 Direction: {direction} {'🟩' if direction=='BUY' else '🟥'}
+💯 Confidence: 80%
+
+🎯 Martingale Levels:
+🔁 Level 1 → {mg1}
+🔁 Level 2 → {mg2}
+🔁 Level 3 → {mg3}
+"""
+    return msg
+
+# ----------------------------
+# SIGNAL LOGIC
+# ----------------------------
+def generate_signal(symbol, screener):
+    analysis = get_analysis(symbol, screener)
+    if not analysis:
+        return None
+
+    rsi = analysis.indicators.get("RSI")
+    rec = analysis.summary.get("RECOMMENDATION")
+
+    print(f"Checking {symbol} | RSI: {rsi} | REC: {rec}")
+
+    if rec == "STRONG_BUY" and rsi < 35:
         direction = "BUY"
-    elif rsi > 70:
+    elif rec == "STRONG_SELL" and rsi > 65:
         direction = "SELL"
     else:
         return None
 
-    return {
-        "pair": pair,
-        "rsi": round(rsi, 2),
-        "macd": macd,
-        "price": price,
-        "signal": direction
-    }
+    # cooldown (5 min)
+    now_ts = time.time()
+    if symbol in last_signal_time:
+        if now_ts - last_signal_time[symbol] < 300:
+            return None
+
+    last_signal_time[symbol] = now_ts
+
+    return direction
 
 # ----------------------------
-# LIVE ENGINE LOOP
+# MAIN ENGINE
 # ----------------------------
 def bot_loop():
-    global latest_signal
-
-    print("🚀 REAL LIVE ENGINE STARTED")
+    print("🚀 TELEGRAM SIGNAL BOT STARTED")
 
     while True:
-        for pair in MARKETS:
-            signal = generate_signal(pair)
+        for symbol, screener in MARKETS:
+            direction = generate_signal(symbol, screener)
 
-            print(f"Checking {pair}")  # DEBUG YOU REQUESTED
+            if direction:
+                message = format_signal(symbol, direction)
 
-            if signal:
-                now = datetime.now(pytz.timezone("Africa/Lagos")).strftime("%H:%M:%S")
+                print("🔥 SENDING SIGNAL")
+                print(message)
 
-                latest_signal = {
-                    "status": "SIGNAL",
-                    "data": signal,
-                    "time": now
-                }
+                send_telegram(message)
 
-                print("🔥 SIGNAL GENERATED:", latest_signal)
-
-            time.sleep(2)  # prevent overload
+            time.sleep(3)
 
         time.sleep(5)
 
 # ----------------------------
-# API ENDPOINT
+# API
 # ----------------------------
 @app.route("/")
 def home():
-    return {"status": "REAL LIVE ENGINE RUNNING 🚀"}
-
-@app.route("/auto")
-def auto():
-    return jsonify(latest_signal)
+    return {"status": "TELEGRAM BOT RUNNING 🚀"}
 
 # ----------------------------
-# START BACKGROUND THREAD
+# START ENGINE
 # ----------------------------
 Thread(target=bot_loop, daemon=True).start()
 
 # ----------------------------
-# RUN APP
+# RUN
 # ----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
