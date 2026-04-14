@@ -1,96 +1,136 @@
-import os
-import time
-import threading
-import requests
 from flask import Flask
+import threading
+import time
+import requests
+import os
 from tradingview_ta import TA_Handler, Interval
-
-# ================= CONFIG =================
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY"]
-INTERVAL = Interval.INTERVAL_1_MINUTE
 
 app = Flask(__name__)
 
-# =============== TELEGRAM =================
-def send_signal(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID,
-        "text": message
-    }
-    try:
-        requests.post(url, data=data)
-    except:
-        print("❌ Telegram Error")
+# =========================
+# SECURE CONFIG (NO HARDCODE)
+# =========================
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-# =============== STRATEGY =================
-def get_signal(symbol):
+if not BOT_TOKEN or not CHAT_ID:
+    raise ValueError("❌ BOT_TOKEN or CHAT_ID not set")
+
+print("✅ Telegram config loaded")
+
+# =========================
+# TELEGRAM FUNCTION
+# =========================
+def send_signal(message):
     try:
-        analysis = TA_Handler(
-            symbol=symbol,
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+        print("📤 Signal sent to Telegram")
+    except Exception as e:
+        print("❌ Telegram Error:", e)
+
+# =========================
+# SETTINGS
+# =========================
+PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURJPY"]
+INTERVAL = Interval.INTERVAL_1_MINUTE
+
+# =========================
+# ANALYSIS ENGINE
+# =========================
+def analyze_pair(pair):
+    try:
+        print(f"🔍 Analyzing {pair}...")
+
+        handler = TA_Handler(
+            symbol=pair,
             screener="forex",
             exchange="FX_IDC",
             interval=INTERVAL
-        ).get_analysis()
+        )
 
-        rsi = analysis.indicators["RSI"]
-        macd = analysis.indicators["MACD.macd"]
-        macd_signal = analysis.indicators["MACD.signal"]
+        analysis = handler.get_analysis()
+        ind = analysis.indicators
 
-        print(f"📊 {symbol} | RSI: {rsi:.2f} | MACD: {macd:.5f}")
+        rsi = ind.get("RSI", 50)
+        macd = ind.get("MACD.macd", 0)
+        signal = ind.get("MACD.signal", 0)
+        ema50 = ind.get("EMA50", 0)
+        close = ind.get("close", 0)
 
-        if rsi < 30 and macd > macd_signal:
-            return "BUY"
-        elif rsi > 70 and macd < macd_signal:
-            return "SELL"
-        else:
-            return None
+        print(f"{pair} | RSI:{rsi:.2f} MACD:{macd:.2f}")
+
+        score_call = 0
+        score_put = 0
+
+        # CALL LOGIC
+        if rsi < 35:
+            score_call += 2
+        if macd > signal:
+            score_call += 2
+        if close > ema50:
+            score_call += 1
+
+        # PUT LOGIC
+        if rsi > 65:
+            score_put += 2
+        if macd < signal:
+            score_put += 2
+        if close < ema50:
+            score_put += 1
+
+        if score_call >= 4:
+            return "CALL", rsi
+
+        if score_put >= 4:
+            return "PUT", rsi
+
+        return None, rsi
 
     except Exception as e:
-        print(f"❌ Error {symbol}: {e}")
-        return None
+        print(f"❌ Error analyzing {pair}:", e)
+        return None, None
 
-# =============== ENGINE =================
-def engine():
-    print("🚀 ELITE LIVE SIGNAL ENGINE STARTED")
+# =========================
+# MAIN ENGINE LOOP
+# =========================
+def run_engine():
+    print("🚀 ELITE AI SIGNAL ENGINE STARTED")
 
     while True:
-        print("🔄 Scanning markets...")
+        print("🔄 NEW SCAN STARTED")
 
-        for symbol in SYMBOLS:
-            signal = get_signal(symbol)
+        for pair in PAIRS:
+            signal, rsi = analyze_pair(pair)
 
             if signal:
                 message = f"""
-🚨 LIVE SIGNAL 🚨
+📊 ELITE AI SIGNAL
 
-PAIR: {symbol}
-DIRECTION: {signal}
-TIMEFRAME: 1M
+Pair: {pair}
+Direction: {signal}
+RSI: {round(rsi,2)}
 
-⚡ Enter immediately
-                """
+Timeframe: 1 MIN
+Entry: Immediate
 
-                print(message)
+⚡ Strategy: Multi-Indicator AI
+💰 Martingale: x2 optional
+"""
+                print(f"✅ SIGNAL: {pair} {signal}")
                 send_signal(message)
 
-            time.sleep(2)
+        print("⏳ Waiting 60 seconds...\n")
+        time.sleep(60)
 
-        time.sleep(10)
+# =========================
+# START ENGINE THREAD
+# =========================
+threading.Thread(target=run_engine, daemon=True).start()
 
-# =============== THREAD =================
-def start_engine():
-    thread = threading.Thread(target=engine)
-    thread.daemon = True
-    thread.start()
-
-# =============== ROUTE =================
-@app.route("/")
+# =========================
+# KEEP RENDER ALIVE
+# =========================
+@app.route('/')
 def home():
     return "BOT IS LIVE"
-
-# =============== START =================
-start_engine()
