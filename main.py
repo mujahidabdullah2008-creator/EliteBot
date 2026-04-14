@@ -1,134 +1,96 @@
-from flask import Flask
+import os
 import time
 import threading
 import requests
-import os
+from flask import Flask
 from tradingview_ta import TA_Handler, Interval
 
-app = Flask(__name__)
-
-# ==============================
-# TELEGRAM CONFIG
-# ==============================
+# ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-# ==============================
-# PAIRS
-# ==============================
-pairs = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "EURJPY"]
+SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY"]
+INTERVAL = Interval.INTERVAL_1_MINUTE
 
-# ==============================
-# ANTI-SPAM MEMORY
-# ==============================
-last_signal = {}
+app = Flask(__name__)
 
-# ==============================
-# TELEGRAM FUNCTION
-# ==============================
+# =============== TELEGRAM =================
 def send_signal(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": CHAT_ID,
+        "text": message
+    }
     try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
-        print("📩 Sent to Telegram", flush=True)
-    except Exception as e:
-        print("Telegram Error:", e, flush=True)
+        requests.post(url, data=data)
+    except:
+        print("❌ Telegram Error")
 
-# ==============================
-# ANALYSIS FUNCTION
-# ==============================
-def analyze_pair(pair):
+# =============== STRATEGY =================
+def get_signal(symbol):
     try:
-        handler = TA_Handler(
-            symbol=pair,
+        analysis = TA_Handler(
+            symbol=symbol,
             screener="forex",
             exchange="FX_IDC",
-            interval=Interval.INTERVAL_1_MINUTE
-        )
-
-        analysis = handler.get_analysis()
+            interval=INTERVAL
+        ).get_analysis()
 
         rsi = analysis.indicators["RSI"]
         macd = analysis.indicators["MACD.macd"]
         macd_signal = analysis.indicators["MACD.signal"]
-        trend = analysis.summary["RECOMMENDATION"]
 
-        print(f"Checking {pair} | RSI: {rsi} | MACD: {macd} | Trend: {trend}", flush=True)
+        print(f"📊 {symbol} | RSI: {rsi:.2f} | MACD: {macd:.5f}")
 
-        # SIGNAL CONDITIONS (BALANCED)
-        if rsi < 35 and macd > macd_signal and trend == "BUY":
+        if rsi < 30 and macd > macd_signal:
             return "BUY"
-
-        elif rsi > 65 and macd < macd_signal and trend == "SELL":
+        elif rsi > 70 and macd < macd_signal:
             return "SELL"
+        else:
+            return None
 
     except Exception as e:
-        print(f"ERROR {pair}: {e}", flush=True)
+        print(f"❌ Error {symbol}: {e}")
+        return None
 
-    return None
-
-# ==============================
-# LIVE ENGINE LOOP
-# ==============================
-def run_bot():
-    print("🚀 ELITE LIVE ENGINE STARTED", flush=True)
+# =============== ENGINE =================
+def engine():
+    print("🚀 ELITE LIVE SIGNAL ENGINE STARTED")
 
     while True:
-        try:
-            print("🔄 Scanning markets...", flush=True)
+        print("🔄 Scanning markets...")
 
-            for pair in pairs:
-                print(f"➡️ Scanning {pair}", flush=True)
+        for symbol in SYMBOLS:
+            signal = get_signal(symbol)
 
-                signal = analyze_pair(pair)
+            if signal:
+                message = f"""
+🚨 LIVE SIGNAL 🚨
 
-                if signal:
-                    now = time.time()
+PAIR: {symbol}
+DIRECTION: {signal}
+TIMEFRAME: 1M
 
-                    if pair in last_signal and now - last_signal[pair] < 300:
-                        continue
+⚡ Enter immediately
+                """
 
-                    last_signal[pair] = now
+                print(message)
+                send_signal(message)
 
-                    message = f"""
-🔥 ELITE SIGNAL 🔥
+            time.sleep(2)
 
-Pair: {pair}
-Signal: {signal}
-Timeframe: M1
+        time.sleep(10)
 
-Martingale:
-1️⃣ Entry
-2️⃣ Entry (if loss)
-3️⃣ Entry (if loss)
-
-⚠️ Trade wisely
-"""
-
-                    print(f"✅ SIGNAL FOUND: {pair} {signal}", flush=True)
-                    send_signal(message)
-
-                    time.sleep(5)
-
-            time.sleep(30)
-
-        except Exception as e:
-            print("🔥 LOOP CRASH:", e, flush=True)
-            time.sleep(5)
-
-# ==============================
-# START ENGINE SAFELY
-# ==============================
+# =============== THREAD =================
 def start_engine():
-    thread = threading.Thread(target=run_bot)
+    thread = threading.Thread(target=engine)
     thread.daemon = True
     thread.start()
 
-start_engine()
-
-# ==============================
-# KEEP ALIVE ROUTE
-# ==============================
+# =============== ROUTE =================
 @app.route("/")
 def home():
-    return "🔥 BOT RUNNING LIVE"
+    return "BOT IS LIVE"
+
+# =============== START =================
+start_engine()
