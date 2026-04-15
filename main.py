@@ -3,8 +3,10 @@ import requests
 import os
 from tradingview_ta import TA_Handler, Interval
 
+print("✅ Bot booting...")
+
 # =========================
-# CONFIG (SECURE)
+# ENV VARIABLES (RENDER SAFE)
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -12,7 +14,8 @@ CHAT_ID = os.getenv("CHAT_ID")
 if not BOT_TOKEN or not CHAT_ID:
     raise Exception("❌ BOT_TOKEN or CHAT_ID missing")
 
-print("✅ Config loaded successfully")
+# Prevent duplicate signals
+LAST_SIGNAL = {}
 
 # =========================
 # TELEGRAM FUNCTION
@@ -20,19 +23,28 @@ print("✅ Config loaded successfully")
 def send_signal(message):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message})
+        requests.post(
+            url,
+            data={"chat_id": CHAT_ID, "text": message},
+            timeout=10
+        )
         print("📤 Signal sent")
     except Exception as e:
         print("❌ Telegram Error:", e)
 
 # =========================
-# SETTINGS
+# PAIRS TO SCAN (15 pairs)
 # =========================
-PAIRS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "EURJPY"]
+PAIRS = [
+    "EURUSD","GBPUSD","USDJPY","AUDUSD","EURJPY",
+    "GBPJPY","EURGBP","USDCAD","USDCHF","AUDJPY",
+    "NZDUSD","CADJPY","GBPCHF","EURAUD","AUDCAD"
+]
+
 INTERVAL = Interval.INTERVAL_1_MINUTE
 
 # =========================
-# ANALYSIS
+# MARKET ANALYSIS
 # =========================
 def analyze_pair(pair):
     try:
@@ -48,37 +60,51 @@ def analyze_pair(pair):
         analysis = handler.get_analysis()
         ind = analysis.indicators
 
-        rsi = ind.get("RSI", 50)
-        macd = ind.get("MACD.macd", 0)
-        signal = ind.get("MACD.signal", 0)
-        ema50 = ind.get("EMA50", 0)
-        close = ind.get("close", 0)
+        # Safe indicator loading
+        rsi = ind.get("RSI") or 50
+        macd = ind.get("MACD.macd") or 0
+        macd_signal = ind.get("MACD.signal") or 0
+        ema20 = ind.get("EMA20") or 0
+        ema50 = ind.get("EMA50") or 0
+        close = ind.get("close") or 0
 
         print(f"{pair} | RSI:{rsi:.2f} MACD:{macd:.2f}")
 
         score_call = 0
         score_put = 0
 
-        # CALL CONDITIONS
-        if rsi < 35:
-            score_call += 2
-        if macd > signal:
-            score_call += 2
+        # ===== CALL CONDITIONS (RELAXED) =====
+        if rsi < 45:
+            score_call += 1
+        if macd > macd_signal:
+            score_call += 1
+        if close > ema20:
+            score_call += 1
         if close > ema50:
             score_call += 1
 
-        # PUT CONDITIONS
-        if rsi > 65:
-            score_put += 2
-        if macd < signal:
-            score_put += 2
+        # ===== PUT CONDITIONS (RELAXED) =====
+        if rsi > 55:
+            score_put += 1
+        if macd < macd_signal:
+            score_put += 1
+        if close < ema20:
+            score_put += 1
         if close < ema50:
             score_put += 1
 
-        if score_call >= 4:
-            return "CALL", rsi
+        print(f"{pair} Scores -> CALL:{score_call} PUT:{score_put}")
 
-        if score_put >= 4:
+        # Strong signals 🔥
+        if score_call >= 3:
+            return "CALL 🔥", rsi
+        if score_put >= 3:
+            return "PUT 🔥", rsi
+
+        # Weak signals
+        if score_call >= 2:
+            return "CALL", rsi
+        if score_put >= 2:
             return "PUT", rsi
 
         return None, rsi
@@ -88,39 +114,49 @@ def analyze_pair(pair):
         return None, None
 
 # =========================
-# MAIN ENGINE
+# MAIN ENGINE (RENDER SAFE)
 # =========================
 def run_bot():
     print("🚀 ELITE AI ENGINE STARTED")
+    send_signal("🤖 Forex bot started successfully")
 
     while True:
-        print("🔄 SCANNING MARKET...\n")
+        try:
+            print("🔄 SCANNING MARKET...\n")
 
-        for pair in PAIRS:
-            signal, rsi = analyze_pair(pair)
+            for pair in PAIRS:
+                signal, rsi = analyze_pair(pair)
 
-            if signal:
-                message = f"""
-📊 ELITE AI SIGNAL
+                # Send only new signals
+                if signal and LAST_SIGNAL.get(pair) != signal:
+                    LAST_SIGNAL[pair] = signal
 
-Pair: {pair}
-Direction: {signal}
-RSI: {round(rsi,2)}
+                    message = (
+                        "📊 ELITE AI SIGNAL\n\n"
+                        f"Pair: {pair}\n"
+                        f"Direction: {signal}\n"
+                        f"RSI: {round(rsi,2)}\n\n"
+                        "Timeframe: 1 MIN\n"
+                        "Entry: Immediate\n\n"
+                        "⚡ Strategy: Multi-Indicator\n"
+                        "💰 Martingale: x2 optional"
+                    )
 
-Timeframe: 1 MIN
-Entry: Immediate
+                    print(f"✅ SIGNAL FOUND: {pair} {signal}")
+                    send_signal(message)
 
-⚡ Strategy: AI Multi-Indicator
-💰 Martingale: x2 optional
-"""
-                print(f"✅ SIGNAL FOUND: {pair} {signal}")
-                send_signal(message)
+                # Anti TradingView rate-limit
+                time.sleep(2)
 
-        print("⏳ Waiting 60 seconds...\n")
-        time.sleep(60)
+            print("⏳ Waiting 60 seconds...\n")
+            time.sleep(60)
+
+        except Exception as e:
+            print("🔥 MAIN LOOP ERROR:", e)
+            time.sleep(30)
 
 # =========================
-# START BOT (IMPORTANT)
+# START BOT
 # =========================
 if __name__ == "__main__":
     run_bot()
