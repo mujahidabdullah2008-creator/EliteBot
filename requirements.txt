@@ -1,5 +1,3 @@
-flask
-tradingview_ta
 requests
-pytz
-gunicorn
+numpy
+tradingview_ta
